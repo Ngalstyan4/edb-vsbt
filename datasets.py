@@ -1,14 +1,16 @@
 import os
+import glob
 import requests
 import h5py
 import numpy as np
+import pyarrow.parquet as pq
 import struct
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
 # --- CONFIGURATION ---
-DATA_DIR = "./datasets"
+DATA_DIR = os.environ.get("DATASET_LOCAL_DIR", "./datasets")
 DATASETS = {
     # --- Standard HDF5 Datasets ---
     "laion-5m-test-ip": {
@@ -65,6 +67,40 @@ DATASETS = {
         # Link to the file you just salvaged and uploaded
         "gt_url": "https://enterprisedb-vector-datasets.s3.amazonaws.com/laion/laion_400m_gt.npy",
         "gt_file": "laion_400m_gt.npy"
+    },
+
+    # --- Parquet Datasets (OpenAI, Cohere) ---
+    "openai-500k-cos": {
+        "type": "parquet",
+        "metric": "cos",
+        "dim": 1536,
+        "num": 500_000,
+        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/openai/openai_medium_500k",
+        "base_dir": os.path.join(DATA_DIR, "openai/openai_medium_500k"),
+    },
+    "openai-5m-cos": {
+        "type": "parquet",
+        "metric": "cos",
+        "dim": 1536,
+        "num": 5_000_000,
+        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/openai/openai_large_5m",
+        "base_dir": os.path.join(DATA_DIR, "openai/openai_large_5m"),
+    },
+    "cohere-1m-cos": {
+        "type": "parquet",
+        "metric": "cos",
+        "dim": 768,
+        "num": 1_000_000,
+        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/cohere/cohere_medium_1m",
+        "base_dir": os.path.join(DATA_DIR, "cohere/cohere_medium_1m"),
+    },
+    "cohere-10m-cos": {
+        "type": "parquet",
+        "metric": "cos",
+        "dim": 768,
+        "num": 10_000_000,
+        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/cohere/cohere_large_10m",
+        "base_dir": os.path.join(DATA_DIR, "cohere/cohere_large_10m"),
     },
 
     # --- Deep1B Configuration ---
@@ -282,6 +318,84 @@ def _load_deep1b_mmap(name, info):
         "neighbors": neighbors_data
     }
 
+def _download_parquet_from_s3(s3_prefix, base_dir):
+    """Download parquet dataset files from S3 if not already present."""
+    import subprocess
+
+    os.makedirs(base_dir, exist_ok=True)
+
+    existing = set(os.listdir(base_dir))
+    needed = ["test.parquet", "neighbors.parquet"]
+    has_train = any(f.startswith("shuffle_train") or f == "train.parquet" for f in existing)
+    has_needed = all(f in existing for f in needed)
+
+    if has_train and has_needed:
+        return
+
+    print(f"Downloading dataset from {s3_prefix} ...")
+    result = subprocess.run(
+        ["aws", "s3", "sync", s3_prefix, base_dir,
+         "--exclude", "scalar_labels*",
+         "--exclude", "neighbors_*"],
+        check=True,
+    )
+
+
+def _load_parquet(name, info):
+    """Handles parquet datasets with train/test/neighbors files."""
+    base_dir = info["base_dir"]
+
+    if info.get("s3_prefix") and not os.path.exists(os.path.join(base_dir, "test.parquet")):
+        _download_parquet_from_s3(info["s3_prefix"], base_dir)
+
+    if not os.path.exists(base_dir):
+        raise FileNotFoundError(f"Dataset directory not found: {base_dir}")
+
+    train_files = sorted(glob.glob(os.path.join(base_dir, "shuffle_train-*.parquet")))
+    if not train_files:
+        train_files = sorted(glob.glob(os.path.join(base_dir, "train.parquet")))
+    if not train_files:
+        raise FileNotFoundError(f"No train parquet files found in {base_dir}")
+
+    test_path = os.path.join(base_dir, "test.parquet")
+    neighbors_path = os.path.join(base_dir, "neighbors.parquet")
+
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(f"test.parquet not found in {base_dir}")
+    if not os.path.exists(neighbors_path):
+        raise FileNotFoundError(f"neighbors.parquet not found in {base_dir}")
+
+    test_table = pq.read_table(test_path)
+    test_embs = np.array(test_table.column("emb").to_pylist(), dtype=np.float32)
+
+    gt_table = pq.read_table(neighbors_path)
+    neighbors = np.array(gt_table.column("neighbors_id").to_pylist())
+
+    dim = info["dim"]
+    num = info["num"]
+
+    def parquet_generator():
+        row_id = 0
+        for f in train_files:
+            pf = pq.ParquetFile(f, memory_map=True)
+            for batch in pf.iter_batches(batch_size=10_000, columns=["emb"]):
+                embs = batch.column("emb")
+                for emb in embs:
+                    yield row_id, np.array(emb.as_py(), dtype=np.float32)
+                    row_id += 1
+
+    return {
+        "name": name,
+        "type": "parquet",
+        "metric": info["metric"],
+        "dim": dim,
+        "num": num,
+        "train": parquet_generator(),
+        "test": test_embs,
+        "neighbors": neighbors,
+    }
+
+
 # --- FACTORY FUNCTION ---
 
 def get_dataset(dataset_name):
@@ -299,6 +413,8 @@ def get_dataset(dataset_name):
         return _load_laion_multipart(dataset_name, info)
     elif dtype == "deep1b-mmap":
         return _load_deep1b_mmap(dataset_name, info)
+    elif dtype == "parquet":
+        return _load_parquet(dataset_name, info)
     else:
         raise ValueError(f"Unknown dataset type: {dtype}")
 
