@@ -414,6 +414,8 @@ def _load_parquet(name, info):
 
     train_files = sorted(glob.glob(os.path.join(base_dir, "shuffle_train-*.parquet")))
     if not train_files:
+        train_files = sorted(glob.glob(os.path.join(base_dir, "shuffle_train.parquet")))
+    if not train_files:
         train_files = sorted(glob.glob(os.path.join(base_dir, "train.parquet")))
     if not train_files:
         raise FileNotFoundError(f"No train parquet files found in {base_dir}")
