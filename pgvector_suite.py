@@ -575,7 +575,11 @@ def main():
     parser = build_arg_parse()
     args = parser.parse_args()
 
-    test_suite = TestSuite(
+    config = common.load_suite_config(args.suite)
+    first_suite = next(iter(config.values()))
+    suite_cls = IVFFlatBQRerankTestSuite if first_suite.get("indexType") == "ivfflat_bq_rerank" else TestSuite
+
+    test_suite = suite_cls(
         suite_file=args.suite,
         url=args.url,
         devices=args.devices,
