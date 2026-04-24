@@ -22,6 +22,10 @@ def build_arg_parse():
     return parser
 
 
+def psql_log_handler(diag):
+    # 'diag' is a Diagnostic object containing message details
+    print(f"[PG PSQL LOG]: {diag.message_primary}")
+
 class TestSuite(common.TestSuite):
     """
     Test suite for VectorChord IVF indexing.
@@ -38,12 +42,14 @@ class TestSuite(common.TestSuite):
         "dot": "vector_ip_ops",
     }
 
+
     @staticmethod
     def process_batch(args):
         """Process a batch of queries in parallel."""
         test, answer, top, metric_ops, url, table_name, nprob, epsilon = args
 
         conn = psycopg.connect(url)
+        conn.add_notice_handler(psql_log_handler);
         pgvector.psycopg.register_vector(conn)
         conn.execute("SET jit=false")
         conn.execute(f'SET vchordrq.probes="{nprob}"')
@@ -101,6 +107,7 @@ class TestSuite(common.TestSuite):
     def create_connection(self):
         """Create a database connection with pgvector support."""
         conn = super().create_connection()
+        conn.add_notice_handler(psql_log_handler);
         pgvector.psycopg.register_vector(conn)
         return conn
 

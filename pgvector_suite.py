@@ -24,6 +24,9 @@ def build_arg_parse():
     common.build_arg_parse(parser)
     return parser
 
+def psql_log_handler(diag):
+    # 'diag' is a Diagnostic object containing message details
+    print(f"[PG PSQL LOG]: {diag.message_primary}")
 
 class TestSuite(common.TestSuite):
     """
@@ -108,6 +111,7 @@ class TestSuite(common.TestSuite):
     def create_connection(self):
         """Create a database connection with pgvector support."""
         conn = super().create_connection()
+        conn.add_notice_handler(psql_log_handler);
         pgvector.psycopg.register_vector(conn)
         return conn
 
@@ -321,6 +325,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
         test, answer, top, rerank_op, url, table_name, probes, dim, rerank_limit_amplify_factor = args
 
         conn = psycopg.connect(url)
+        conn.add_notice_handler(psql_log_handler);
         pgvector.psycopg.register_vector(conn)
         conn.execute("SET jit=false")
         conn.execute(f"SET ivfflat.probes TO {probes}")
