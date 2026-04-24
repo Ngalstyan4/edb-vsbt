@@ -138,6 +138,14 @@ def build_arg_parse(parser: argparse.ArgumentParser):
         required=False,
     )
 
+    parser.add_argument(
+        "--whpg",
+        help="Enable WarehousePG/Greenplum mode (DISTRIBUTED BY, disable ORCA optimizer)",
+        action="store_true",
+        default=False,
+        required=False,
+    )
+
 
 
 def get_keepalive_kwargs() -> dict:
@@ -234,7 +242,8 @@ class TestSuite:
                  overwrite_table: bool = False,
                  debug_single_query: bool = False,
                  build_only: bool = False,
-                 max_queries: int = None):
+                 max_queries: int = None,
+                 whpg: bool = False):
         self.suite_file = suite_file
         self.config = load_suite_config(suite_file)
         self.url = url
@@ -252,6 +261,7 @@ class TestSuite:
         self.debug_single_query = debug_single_query
         self.build_only = build_only
         self.max_queries = max_queries
+        self.whpg = whpg
 
         # Check if database is local or remote
         self.is_local_db = is_local_database(url)
@@ -279,6 +289,11 @@ class TestSuite:
             autocommit=True,
             **self.keepalive_kwargs,
         )
+        if self.whpg:
+            try:
+                conn.execute("SET optimizer TO off")
+            except Exception:
+                pass
         return conn
 
     def make_batch_args(self, test, answer, top, metric_ops, table_name, benchmark):
@@ -307,7 +322,7 @@ class TestSuite:
             pass
 
     def prewarm_index(self, table_name: str):
-        raise NotImplementedError("prewarm_index should be implemented in subclasses.")
+        print("WARNING: No prewarm implementation for this suite, skipping.")
 
     def add_embeddings(self, suite_name: str, table_name: str, ds: dict, pg_parallel_workers: int = None):
         """
@@ -349,7 +364,16 @@ class TestSuite:
             conn.close()
             return
 
-        conn.execute(f"CREATE TABLE {table_name} (id integer, embedding vector({dim}))")
+        create_sql = f"CREATE TABLE {table_name} (id integer, embedding vector({dim}))"
+        if self.whpg:
+            storage_type = self.config[suite_name].get("storageType", "heap")
+            storage_clause = {
+                "ao_column": "WITH (appendonly=true, orientation=column)",
+                "ao_row": "WITH (appendonly=true)",
+                "heap": "",
+            }.get(storage_type, "")
+            create_sql += f" {storage_clause} DISTRIBUTED BY (id)"
+        conn.execute(create_sql)
         if pg_parallel_workers is not None:
             conn.execute(f"ALTER TABLE {table_name} SET (parallel_workers = {pg_parallel_workers})")
         conn.commit()
@@ -438,12 +462,13 @@ class TestSuite:
         conn = self.create_connection()
 
         conn.execute(f"DROP TABLE IF EXISTS {table_name}")
+        distributed_clause = " DISTRIBUTED BY (id)" if self.whpg else ""
         conn.execute(f"""
             CREATE TABLE {table_name} (
                 id INT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
                 parent INT,
                 vector vector({vector_dimensions})
-            )
+            ){distributed_clause}
         """)
 
         if centroids.size == 0:
@@ -577,7 +602,7 @@ class TestSuite:
         conn.close()
 
     def sequential_bench(self, name: str, table_name: str, conn: psycopg.Connection, metric_ops: str, top: int,
-                         benchmark: dict, dataset: dict) -> tuple[list[tuple[int, float]], str]:
+                         benchmark: dict, dataset: dict, whpg: bool = False) -> tuple[list[tuple[int, float]], str]:
         m = dataset["test"].shape[0]
         conn.execute("SET jit=false")
 
@@ -614,7 +639,11 @@ class TestSuite:
             query = single_query if self.debug_single_query else dataset["test"][i]
 
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,), prepare=True, binary=True)
+            if whpg:
+                vec_str = "[" + ",".join(str(float(x)) for x in query) + "]"
+                cursor.execute(f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} '{vec_str}'::vector LIMIT {top}")
+            else:
+                cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 

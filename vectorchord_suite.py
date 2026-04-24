@@ -46,13 +46,15 @@ class TestSuite(common.TestSuite):
     @staticmethod
     def process_batch(args):
         """Process a batch of queries in parallel."""
-        test, answer, top, metric_ops, url, table_name, nprob, epsilon = args
+        test, answer, top, metric_ops, url, table_name, nprob, epsilon, whpg = args
 
         conn = psycopg.connect(url)
         conn.add_notice_handler(psql_log_handler);
         pgvector.psycopg.register_vector(conn)
+        if whpg:
+            conn.execute("SET optimizer TO off")
         conn.execute("SET jit=false")
-        conn.execute(f'SET vchordrq.probes="{nprob}"')
+        conn.execute(f"SET vchordrq.probes = '{nprob}'")
         conn.execute(f"SET vchordrq.epsilon={epsilon}")
 
         query_sql = f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s LIMIT {top}"
@@ -61,7 +63,11 @@ class TestSuite(common.TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,), prepare=True, binary=True)
+            if whpg:
+                vec_str = "[" + ",".join(str(float(x)) for x in query) + "]"
+                cursor.execute(f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} '{vec_str}'::vector LIMIT {top}")
+            else:
+                cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -87,6 +93,7 @@ class TestSuite(common.TestSuite):
             table_name,
             benchmark["nprob"],
             benchmark["epsilon"],
+            self.whpg,
         )
 
     @staticmethod
@@ -140,9 +147,7 @@ class TestSuite(common.TestSuite):
             prewarm_time = time.perf_counter() - prewarm_start
             print(f" done! ({prewarm_time:.1f}s)")
         except psycopg.Error as e:
-            print(f" failed! ({e.diag.message_primary})")
-            self.debug_log(f"Prewarm failed: {e}")
-
+            print(f"\nWARNING: vchordrq_prewarm not available, skipping. ({e.diag.message_primary})")
         finally:
             conn.close()
 
@@ -310,19 +315,22 @@ class TestSuite(common.TestSuite):
         dataset: dict,
     ) -> tuple[list[tuple[int, float]], str]:
         """Run sequential benchmark queries."""
+        nprob = benchmark["nprob"]
+        epsilon = benchmark["epsilon"]
         conn.execute("SET jit=false")
-        conn.execute(f'SET vchordrq.probes="{benchmark["nprob"]}"')
-        conn.execute(f"SET vchordrq.epsilon={benchmark['epsilon']}")
+        conn.execute(f"SET vchordrq.probes = '{nprob}'")
+        conn.execute(f"SET vchordrq.epsilon={epsilon}")
 
         metric_ops = self._get_metric_operator(metric)
 
         self.debug_log(
-            f"Benchmark config: nprob={benchmark['nprob']}, epsilon={benchmark['epsilon']}, "
+            f"Benchmark config: nprob={nprob}, epsilon={epsilon}, "
             f"metric={metric}, metric_ops={metric_ops}"
         )
 
         return super().sequential_bench(
-            name, table_name, conn, metric_ops, top, benchmark, dataset
+            name, table_name, conn, metric_ops, top, benchmark, dataset,
+            whpg=self.whpg,
         )
 
     def generate_markdown_result(self):
@@ -367,6 +375,7 @@ def main():
         debug_single_query=args.debug_single_query,
         build_only=args.build_only,
         max_queries=args.max_queries,
+        whpg=args.whpg,
     )
 
     test_suite.run()

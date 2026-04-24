@@ -39,10 +39,12 @@ class TestSuite(common.TestSuite):
     @staticmethod
     def process_batch(args):
         """Process a batch of queries in parallel."""
-        test, answer, top, metric_ops, url, table_name, ef_search = args
+        test, answer, top, metric_ops, url, table_name, ef_search, whpg = args
 
         conn = psycopg.connect(url)
         pgvector.psycopg.register_vector(conn)
+        if whpg:
+            conn.execute("SET optimizer TO off")
         conn.execute(f"SET hnsw.ef_search={ef_search}")
         conn.execute("SET enable_seqscan = off")
 
@@ -52,7 +54,11 @@ class TestSuite(common.TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,), prepare=True, binary=True)
+            if whpg:
+                vec_str = "[" + ",".join(str(float(x)) for x in query) + "]"
+                cursor.execute(f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} '{vec_str}'::vector LIMIT {top}")
+            else:
+                cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -77,6 +83,7 @@ class TestSuite(common.TestSuite):
             self.url,
             table_name,
             benchmark["efSearch"],
+            self.whpg,
         )
 
     @staticmethod
@@ -126,7 +133,10 @@ class TestSuite(common.TestSuite):
         """Initialize required PostgreSQL extensions."""
         conn = super().create_connection()
         conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+        try:
+            conn.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+        except psycopg.Error:
+            print("WARNING: pg_prewarm extension not available. Index prewarming will be skipped.")
         conn.close()
         self.debug_log("Extensions initialized successfully.")
 
@@ -142,9 +152,7 @@ class TestSuite(common.TestSuite):
             prewarm_time = time.perf_counter() - prewarm_start
             print(f" done! ({prewarm_time:.1f}s)")
         except psycopg.Error as e:
-            print(f" failed! ({e.diag.message_primary})")
-            self.debug_log(f"Prewarm failed: {e}")
-
+            print(f"\nWARNING: pg_prewarm not available, skipping. ({e.diag.message_primary})")
         finally:
             conn.close()
 
@@ -294,7 +302,8 @@ class TestSuite(common.TestSuite):
         )
 
         return super().sequential_bench(
-            name, table_name, conn, metric_ops, top, benchmark, dataset
+            name, table_name, conn, metric_ops, top, benchmark, dataset,
+            whpg=self.whpg,
         )
 
     def generate_markdown_result(self):
@@ -333,11 +342,13 @@ class IVFFlatBQRerankTestSuite(TestSuite):
     @staticmethod
     def process_batch(args):
         """Process a batch of queries in parallel (two-stage BQ rerank)."""
-        test, answer, top, rerank_op, url, table_name, probes, dim, rerank_limit_amplify_factor = args
+        test, answer, top, rerank_op, url, table_name, probes, dim, rerank_limit_amplify_factor, whpg = args
 
         conn = psycopg.connect(url)
         conn.add_notice_handler(psql_log_handler);
         pgvector.psycopg.register_vector(conn)
+        if whpg:
+            conn.execute("SET optimizer TO off")
         conn.execute("SET jit=false")
         conn.execute(f"SET ivfflat.probes TO {probes}")
 
@@ -358,7 +369,21 @@ class IVFFlatBQRerankTestSuite(TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query, rerank_limit, query, top), prepare=True, binary=True)
+            if whpg:
+                vec_str = "[" + ",".join(str(float(x)) for x in query) + "]"
+                raw_sql = (
+                    f"SELECT id FROM ("
+                    f"SELECT id, embedding FROM {table_name} "
+                    f"ORDER BY binary_quantize(embedding)::bit({dim}) <~> "
+                    f"binary_quantize('{vec_str}'::vector({dim}))::bit({dim}) "
+                    f"LIMIT {rerank_limit}"
+                    f") sub "
+                    f"ORDER BY embedding::halfvec({dim}) {rerank_op} '{vec_str}'::halfvec({dim}) "
+                    f"LIMIT {top}"
+                )
+                cursor.execute(raw_sql)
+            else:
+                cursor.execute(query_sql, (query, rerank_limit, query, top), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -386,6 +411,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             benchmark["probes"],
             dim,
             benchmark.get("rerank_limit_amplify_factor", 20),
+            self.whpg,
         )
 
     def build_verify_query(self, suite_name, table_name, dataset, benchmark):
@@ -520,7 +546,21 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             query = single_query if self.debug_single_query else dataset["test"][i]
 
             start = time.perf_counter()
-            cursor.execute(query_sql, (query, rerank_limit, query, top), prepare=True, binary=True)
+            if self.whpg:
+                vec_str = "[" + ",".join(str(float(x)) for x in query) + "]"
+                raw_sql = (
+                    f"SELECT id FROM ("
+                    f"SELECT id, embedding FROM {table_name} "
+                    f"ORDER BY binary_quantize(embedding)::bit({dim}) <~> "
+                    f"binary_quantize('{vec_str}'::vector({dim}))::bit({dim}) "
+                    f"LIMIT {rerank_limit}"
+                    f") sub "
+                    f"ORDER BY embedding::halfvec({dim}) {rerank_op} '{vec_str}'::halfvec({dim}) "
+                    f"LIMIT {top}"
+                )
+                cursor.execute(raw_sql)
+            else:
+                cursor.execute(query_sql, (query, rerank_limit, query, top), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -630,6 +670,7 @@ def main():
         debug_single_query=args.debug_single_query,
         build_only=args.build_only,
         max_queries=args.max_queries,
+        whpg=args.whpg,
     )
 
     test_suite.run()
