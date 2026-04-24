@@ -350,8 +350,28 @@ def _load_deep1b_mmap(name, info):
         "neighbors": neighbors_data
     }
 
-def _download_parquet_from_s3(s3_prefix, base_dir):
+def _s3_prefix_to_http_url(s3_prefix, filename):
+    """Convert s3://bucket/key to https://bucket.s3.amazonaws.com/key/filename."""
+    without_scheme = s3_prefix[len("s3://"):]
+    bucket, _, key = without_scheme.partition("/")
+    return f"https://{bucket}.s3.amazonaws.com/{key}/{filename}"
+
+
+def _expected_parquet_files(num):
+    """Return the list of expected parquet filenames for a dataset of size `num`."""
+    files = ["test.parquet", "neighbors.parquet"]
+    file_count = max(1, num // 1_000_000)
+    if file_count == 1:
+        files.append("shuffle_train.parquet")
+    else:
+        for i in range(file_count):
+            files.append(f"shuffle_train-{i:02d}-of-{file_count:02d}.parquet")
+    return files
+
+
+def _download_parquet_from_s3(s3_prefix, base_dir, num):
     """Download parquet dataset files from S3 if not already present."""
+    import shutil
     import subprocess
 
     os.makedirs(base_dir, exist_ok=True)
@@ -364,13 +384,22 @@ def _download_parquet_from_s3(s3_prefix, base_dir):
     if has_train and has_needed:
         return
 
-    print(f"Downloading dataset from {s3_prefix} ...")
-    result = subprocess.run(
-        ["aws", "s3", "sync", s3_prefix, base_dir,
-         "--exclude", "scalar_labels*",
-         "--exclude", "neighbors_*"],
-        check=True,
-    )
+    if shutil.which("aws"):
+        print(f"Downloading dataset from {s3_prefix} ...")
+        subprocess.run(
+            ["aws", "s3", "sync", s3_prefix, base_dir,
+             "--exclude", "scalar_labels*",
+             "--exclude", "neighbors_*"],
+            check=True,
+        )
+    else:
+        print(f"Warning: aws CLI not found, downloading via HTTP (install aws CLI for faster parallel downloads)...")
+        for filename in _expected_parquet_files(num):
+            dest = os.path.join(base_dir, filename)
+            if os.path.exists(dest):
+                continue
+            url = _s3_prefix_to_http_url(s3_prefix, filename)
+            download_http_file(url, dest)
 
 
 def _load_parquet(name, info):
@@ -378,7 +407,7 @@ def _load_parquet(name, info):
     base_dir = info["base_dir"]
 
     if info.get("s3_prefix") and not os.path.exists(os.path.join(base_dir, "test.parquet")):
-        _download_parquet_from_s3(info["s3_prefix"], base_dir)
+        _download_parquet_from_s3(info["s3_prefix"], base_dir, info["num"])
 
     if not os.path.exists(base_dir):
         raise FileNotFoundError(f"Dataset directory not found: {base_dir}")
