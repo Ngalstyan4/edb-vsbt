@@ -614,7 +614,7 @@ class TestSuite:
             query = single_query if self.debug_single_query else dataset["test"][i]
 
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,))
+            cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -778,6 +778,33 @@ class TestSuite:
 
         print()
 
+    def verify_index_usage(self, table_name: str, query_sql: str, params: tuple):
+        """Run EXPLAIN on the search query and warn if it doesn't use an index scan."""
+        conn = self.create_connection()
+        try:
+            rows = conn.execute(f"EXPLAIN {query_sql}", params).fetchall()
+            plan_text = "\n".join(row[0] for row in rows)
+            plan_lower = plan_text.lower()
+            if "index scan" not in plan_lower and "index only scan" not in plan_lower:
+                print(f"WARNING: query plan does not use an index scan. Results may reflect sequential scan performance.")
+                if self.debug:
+                    print(plan_text)
+            else:
+                self.debug_log(f"EXPLAIN verified: query uses index scan")
+                if self.debug:
+                    print(plan_text)
+        except psycopg.Error as e:
+            self.debug_log(f"EXPLAIN verification failed: {e}")
+        finally:
+            conn.close()
+
+    def build_verify_query(self, suite_name: str, table_name: str, dataset: dict, benchmark: dict) -> tuple[str, tuple] | None:
+        """Return (query_sql, params) for EXPLAIN verification, or None to skip.
+
+        Subclasses should override to provide the actual search query shape.
+        """
+        return None
+
     def run_benchmarks(self, suite_name: str, table_name: str, dataset: dict, query_clients):
         # Limit queries if requested
         if self.max_queries and dataset["test"].shape[0] > self.max_queries:
@@ -787,6 +814,13 @@ class TestSuite:
 
         # Prewarm index once before all benchmarks
         self.prewarm_index(table_name)
+
+        # Verify index usage with the first benchmark's query
+        first_benchmark = next(iter(self.config[suite_name]["benchmarks"].values()), None)
+        if first_benchmark is not None:
+            verify = self.build_verify_query(suite_name, table_name, dataset, first_benchmark)
+            if verify is not None:
+                self.verify_index_usage(table_name, *verify)
 
         for name, benchmark in self.config[suite_name]["benchmarks"].items():
             print(f"Running benchmark: {benchmark}")
@@ -881,6 +915,13 @@ class TestSuite:
 
             if self.system_monitor:
                 self.system_monitor.mark_phase("load_end")
+
+            print("Running ANALYZE...", end="", flush=True)
+            analyze_conn = self.create_connection()
+            analyze_conn.execute(f"ANALYZE {table_name}")
+            analyze_conn.close()
+            print(" done!")
+
             self.pg_stats_collector.capture_snapshot("after_load", table_name)
 
         if self.centroids is not None and not self.skip_index_creation:

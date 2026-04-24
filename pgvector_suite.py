@@ -52,7 +52,7 @@ class TestSuite(common.TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,))
+            cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -107,6 +107,13 @@ class TestSuite(common.TestSuite):
         if metric not in funcs:
             raise ValueError(f"Unsupported metric type: {metric}")
         return funcs[metric]
+
+    def build_verify_query(self, suite_name, table_name, dataset, benchmark):
+        metric_ops = self._get_metric_operator(self.config[suite_name]["metric"])
+        top = self.config[suite_name]["top"]
+        dummy = np.zeros(dataset["dim"], dtype=np.float32)
+        query_sql = f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s LIMIT {top}"
+        return query_sql, (dummy,)
 
     def create_connection(self):
         """Create a database connection with pgvector support."""
@@ -239,9 +246,13 @@ class TestSuite(common.TestSuite):
             print(f"    • Metric Function: {metric_func}")
             print()
 
+        maintenance_work_mem = config.get("maintenance_work_mem")
+
         conn = self.create_connection()
         start_time = time.perf_counter()
 
+        if maintenance_work_mem:
+            conn.execute(f"SET maintenance_work_mem TO '{maintenance_work_mem}'")
         conn.execute(f"SET max_parallel_maintenance_workers TO {pg_parallel_workers}")
         conn.execute(f"SET max_parallel_workers TO {pg_parallel_workers}")
         conn.execute(
@@ -347,7 +358,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query, rerank_limit, query, top))
+            cursor.execute(query_sql, (query, rerank_limit, query, top), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -376,6 +387,25 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             dim,
             benchmark.get("rerank_limit_amplify_factor", 20),
         )
+
+    def build_verify_query(self, suite_name, table_name, dataset, benchmark):
+        rerank_op = self._get_metric_operator(self.config[suite_name]["metric"])
+        top = self.config[suite_name]["top"]
+        dim = dataset["dim"]
+        rerank_limit_amplify_factor = benchmark.get("rerank_limit_amplify_factor", 20)
+        rerank_limit = top * rerank_limit_amplify_factor
+        dummy = np.zeros(dim, dtype=np.float32)
+        query_sql = (
+            f"SELECT id FROM ("
+            f"SELECT id, embedding FROM {table_name} "
+            f"ORDER BY binary_quantize(embedding)::bit({dim}) <~> "
+            f"binary_quantize(%s::vector({dim}))::bit({dim}) "
+            f"LIMIT %s::int"
+            f") sub "
+            f"ORDER BY embedding::halfvec({dim}) {rerank_op} %s::halfvec({dim}) "
+            f"LIMIT %s::int"
+        )
+        return query_sql, (dummy, rerank_limit, dummy, top)
 
     def create_index(self, suite_name: str, table_name: str, dataset: dict):
         """Create an IVFFlat BQ expression index."""
@@ -490,7 +520,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             query = single_query if self.debug_single_query else dataset["test"][i]
 
             start = time.perf_counter()
-            cursor.execute(query_sql, (query, rerank_limit, query, top))
+            cursor.execute(query_sql, (query, rerank_limit, query, top), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 

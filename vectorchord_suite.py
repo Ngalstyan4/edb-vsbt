@@ -61,7 +61,7 @@ class TestSuite(common.TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,))
+            cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -103,6 +103,14 @@ class TestSuite(common.TestSuite):
         if metric not in operators:
             raise ValueError(f"Unsupported metric type: {metric}")
         return operators[metric]
+
+    def build_verify_query(self, suite_name, table_name, dataset, benchmark):
+        import numpy as np
+        metric_ops = self._get_metric_operator(self.config[suite_name]["metric"])
+        top = self.config[suite_name]["top"]
+        dummy = np.zeros(dataset["dim"], dtype=np.float32)
+        query_sql = f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s LIMIT {top}"
+        return query_sql, (dummy,)
 
     def create_connection(self):
         """Create a database connection with pgvector support."""
@@ -189,6 +197,7 @@ class TestSuite(common.TestSuite):
         kmeans_dimension = config.get("kmeans_dimension", dataset["dim"])
         sampling_factor = config["samplingFactor"]
         residual_quantization = config["residual_quantization"]
+        rerank_in_table = config.get("rerank_in_table")
         metric = dataset["metric"]
 
         num_vectors = dataset.get("num", 0)

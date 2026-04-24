@@ -52,7 +52,7 @@ class TestSuite(common.TestSuite):
         cursor = conn.cursor()
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,))
+            cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
