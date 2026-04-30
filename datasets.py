@@ -435,15 +435,21 @@ def _load_parquet(name, info):
     dim = info["dim"]
     num = info["num"]
 
+    has_id_col = "id" in pq.ParquetFile(train_files[0]).schema.names
+
     def parquet_generator():
         row_id = 0
         for f in train_files:
             pf = pq.ParquetFile(f, memory_map=True)
-            for batch in pf.iter_batches(batch_size=10_000, columns=["emb"]):
-                embs = batch.column("emb")
-                for emb in embs:
-                    yield row_id, np.array(emb.as_py(), dtype=np.float32)
-                    row_id += 1
+            if has_id_col:
+                for batch in pf.iter_batches(batch_size=10_000, columns=["id", "emb"]):
+                    for rid, emb in zip(batch.column("id"), batch.column("emb")):
+                        yield rid.as_py(), np.array(emb.as_py(), dtype=np.float32)
+            else:
+                for batch in pf.iter_batches(batch_size=10_000, columns=["emb"]):
+                    for emb in batch.column("emb"):
+                        yield row_id, np.array(emb.as_py(), dtype=np.float32)
+                        row_id += 1
 
     return {
         "name": name,
