@@ -496,6 +496,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
         conn.execute("SET jit=false")
         probes = benchmark["probes"]
         conn.execute(f"SET ivfflat.probes TO {probes}")
+        conn.execute("SET ivfflat.scan_stats TO on")
 
         rerank_op = self._get_metric_operator(metric)
         dim = dataset["dim"]
@@ -535,10 +536,13 @@ class IVFFlatBQRerankTestSuite(TestSuite):
 
         results = []
         latencies = []
+        step_lists_ms = []
+        step_items_ms = []
         total_hits = 0
         total_time = 0.0
 
         cursor = conn.cursor()
+        stats_cursor = conn.cursor()
 
         pbar = tqdm(range(m), total=m, ncols=80,
                     bar_format="{desc} {n}/{total}: {percentage:3.0f}%|{bar}|")
@@ -564,6 +568,13 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             result = cursor.fetchall()
             end = time.perf_counter()
 
+            stats_cursor.execute(
+                "SELECT ivfflat_scan_stats_get_lists_ms(), ivfflat_scan_stats_get_items_ms()"
+            )
+            stats_row = stats_cursor.fetchone()
+            step_lists_ms.append(stats_row[0])
+            step_items_ms.append(stats_row[1])
+
             query_time = end - start
             latencies.append(query_time)
             total_time += query_time
@@ -586,20 +597,54 @@ class IVFFlatBQRerankTestSuite(TestSuite):
                 recall_color = "\033[92m" if curr_recall >= 0.95 else "\033[91m"
                 pbar.set_description(f"recall: {recall_color}{curr_recall:.4f}\033[0m QPS: {curr_qps:.2f} P50: {curr_p50:.2f}ms")
 
+        stats_cursor.close()
         cursor.close()
         pbar.close()
+
+        self._last_step_lists_ms = step_lists_ms
+        self._last_step_items_ms = step_items_ms
+        self._last_latencies_ms = [t * 1000 for t in latencies]
+
         return results, rerank_op
 
+    def run_benchmark(self, suite_name: str, name: str, table_name: str, result_dir: str, benchmark: dict,
+                      dataset: dict, query_clients):
+        """Override to capture per-step latency stats from sequential bench."""
+        self._last_step_lists_ms = None
+        self._last_step_items_ms = None
+        self._last_latencies_ms = None
+
+        super().run_benchmark(suite_name, name, table_name, result_dir, benchmark, dataset, query_clients)
+
+        if self._last_step_lists_ms and self._last_step_items_ms and self._last_latencies_ms:
+            lists_arr = np.array(self._last_step_lists_ms)
+            items_arr = np.array(self._last_step_items_ms)
+            rerank_arr = np.array(self._last_latencies_ms) - lists_arr - items_arr
+
+            self.results[suite_name][name]["p50_lists_ms"] = float(np.percentile(lists_arr, 50))
+            self.results[suite_name][name]["p99_lists_ms"] = float(np.percentile(lists_arr, 99))
+            self.results[suite_name][name]["p50_items_ms"] = float(np.percentile(items_arr, 50))
+            self.results[suite_name][name]["p99_items_ms"] = float(np.percentile(items_arr, 99))
+            self.results[suite_name][name]["p50_rerank_ms"] = float(np.percentile(rerank_arr, 50))
+            self.results[suite_name][name]["p99_rerank_ms"] = float(np.percentile(rerank_arr, 99))
+
     def print_summary_table(self, suite_name: str):
-        """Print summary table with probes and rerank columns."""
+        """Print summary table with probes, rerank, and step breakdown columns."""
         benchmarks = self.config[suite_name].get("benchmarks", {})
         results = self.results.get(suite_name, {})
 
         if not benchmarks:
             return
 
-        header = "| Probes | Rerank Amp | Recall | QPS    | P50 (ms) | P99 (ms) |"
-        sep    = "|--------|------------|--------|--------|----------|----------|"
+        first_r = next((results.get(n, {}) for n in benchmarks if "recall" in results.get(n, {})), {})
+        has_step_stats = "p50_lists_ms" in first_r
+
+        if has_step_stats:
+            header = "| Probes | Rerank Amp | Recall | QPS    | P50 (ms) | P99 (ms) | Lists P50 | Items P50 | Rerank P50 |"
+            sep    = "|--------|------------|--------|--------|----------|----------|-----------|-----------|------------|"
+        else:
+            header = "| Probes | Rerank Amp | Recall | QPS    | P50 (ms) | P99 (ms) |"
+            sep    = "|--------|------------|--------|--------|----------|----------|"
 
         sb = results.get("shared_buffers", "N/A")
         idx_size = results.get("index_size", "N/A")
@@ -616,12 +661,18 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             r = results.get(name, {})
             if "recall" not in r:
                 continue
-            print(f"| {benchmark['probes']:<6} "
-                  f"| {benchmark.get('rerank_limit_amplify_factor', 20):<10} "
-                  f"| {r['recall']:.4f} "
-                  f"| {r['qps']:>6.2f} "
-                  f"| {r['p50_latency']:>8.2f} "
-                  f"| {r['p99_latency']:>8.2f} |")
+            row = (f"| {benchmark['probes']:<6} "
+                   f"| {benchmark.get('rerank_limit_amplify_factor', 20):<10} "
+                   f"| {r['recall']:.4f} "
+                   f"| {r['qps']:>6.2f} "
+                   f"| {r['p50_latency']:>8.2f} "
+                   f"| {r['p99_latency']:>8.2f} |")
+            if has_step_stats:
+                row = row[:-1]  # remove trailing |
+                row += (f" {r.get('p50_lists_ms', 0):>9.2f} "
+                        f"| {r.get('p50_items_ms', 0):>9.2f} "
+                        f"| {r.get('p50_rerank_ms', 0):>10.2f} |")
+            print(row)
 
         print()
 
