@@ -361,7 +361,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             f"binary_quantize(%s::vector({dim}))::bit({dim}) "
             f"LIMIT %s::int"
             f") sub "
-            f"ORDER BY embedding::halfvec({dim}) {rerank_op} %s::halfvec({dim}) "
+            f"ORDER BY embedding {rerank_op} %s::vector({dim}) "
             f"LIMIT %s::int"
         )
 
@@ -378,7 +378,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
                     f"binary_quantize('{vec_str}'::vector({dim}))::bit({dim}) "
                     f"LIMIT {rerank_limit}"
                     f") sub "
-                    f"ORDER BY embedding::halfvec({dim}) {rerank_op} '{vec_str}'::halfvec({dim}) "
+                    f"ORDER BY embedding {rerank_op} '{vec_str}'::vector({dim}) "
                     f"LIMIT {top}"
                 )
                 cursor.execute(raw_sql)
@@ -428,7 +428,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             f"binary_quantize(%s::vector({dim}))::bit({dim}) "
             f"LIMIT %s::int"
             f") sub "
-            f"ORDER BY embedding::halfvec({dim}) {rerank_op} %s::halfvec({dim}) "
+            f"ORDER BY embedding {rerank_op} %s::vector({dim}) "
             f"LIMIT %s::int"
         )
         return query_sql, (dummy, rerank_limit, dummy, top)
@@ -514,7 +514,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             f"binary_quantize(%s::vector({dim}))::bit({dim}) "
             f"LIMIT %s::int"
             f") sub "
-            f"ORDER BY embedding::halfvec({dim}) {rerank_op} %s::halfvec({dim}) "
+            f"ORDER BY embedding {rerank_op} %s::vector({dim}) "
             f"LIMIT %s::int"
         )
 
@@ -555,7 +555,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
                     f"binary_quantize('{vec_str}'::vector({dim}))::bit({dim}) "
                     f"LIMIT {rerank_limit}"
                     f") sub "
-                    f"ORDER BY embedding::halfvec({dim}) {rerank_op} '{vec_str}'::halfvec({dim}) "
+                    f"ORDER BY embedding {rerank_op} '{vec_str}'::vector({dim}) "
                     f"LIMIT {top}"
                 )
                 cursor.execute(raw_sql)
