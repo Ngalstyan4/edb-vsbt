@@ -152,14 +152,20 @@ class TestSuite(common.TestSuite):
             conn.close()
 
     @staticmethod
-    def estimate_vchordrq_index_size(num_vectors: int, dim: int, lists) -> int:
+    def estimate_vchordrq_index_size(
+        num_vectors: int, dim: int, lists, rerank_in_table: bool = False
+    ) -> int:
         """Estimate on-disk vchordrq (IVF-RaBitQ) index size in bytes.
 
-        The index stores full f32 vectors for re-ranking (~95% of size)
-        plus RaBitQ codes and metadata. Lists can be a single int or a
-        hierarchical list like [400, 160000].
+        When rerank_in_table=False (default), the index stores full f32
+        vectors for re-ranking (~95% of size) plus RaBitQ codes, metadata,
+        and centroids. When rerank_in_table=True, full vectors are read
+        from the heap during reranking and the vector_tuples page group
+        is omitted, shrinking the index roughly 20x.
 
-        Validated against:
+        Lists can be a single int or a hierarchical list like [400, 160000].
+
+        Validated (rerank_in_table=False) against:
           dim=768, 5M vecs,   lists=[190,35000]   -> ~3% off (actual 21 GB)
           dim=768, 100M vecs, lists=[400,160000]  -> ~2% off (actual 400 GB)
           dim=96,  1B vecs,   lists=[400,160000]  -> ~3% off (actual 469 GB)
@@ -171,10 +177,14 @@ class TestSuite(common.TestSuite):
 
         PAGE_USABLE = 8192 - 40
 
-        # Vector tuples: full f32 vectors packed into 8KB pages
-        vt_size = maxalign(4 * dim + 32)
-        vt_per_page = max(1, PAGE_USABLE // vt_size)
-        vector_bytes = (PAGE_USABLE / vt_per_page) * num_vectors
+        # Vector tuples: full f32 vectors packed into 8KB pages.
+        # Skipped entirely when rerank_in_table=True (vectors live in heap).
+        if rerank_in_table:
+            vector_bytes = 0
+        else:
+            vt_size = maxalign(4 * dim + 32)
+            vt_per_page = max(1, PAGE_USABLE // vt_size)
+            vector_bytes = (PAGE_USABLE / vt_per_page) * num_vectors
 
         # Frozen tuples: RaBitQ codes + metadata (~30 bytes/vec + packed codes)
         frozen_bytes = (30 + math.ceil(dim / 8) / 32 * 16) * num_vectors
@@ -208,7 +218,9 @@ class TestSuite(common.TestSuite):
         num_vectors = dataset.get("num", 0)
         dim = dataset.get("dim", 0)
         if num_vectors and dim:
-            est_bytes = self.estimate_vchordrq_index_size(num_vectors, dim, lists)
+            est_bytes = self.estimate_vchordrq_index_size(
+                num_vectors, dim, lists, rerank_in_table=bool(rerank_in_table)
+            )
             est_gb = est_bytes / (1024 ** 3)
             print(f"Estimated on-disk index size: {est_gb:.1f} GB")
 
