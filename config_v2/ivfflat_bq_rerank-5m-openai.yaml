@@ -9,6 +9,5 @@ ivfflat-bq-rerank-openai-5m-test:
   top: 10
   benchmarks:
     probes400-rerank20:
-      probes: 400
+      probes: 250
       rerank_limit_amplify_factor: 20
-      scan_limit: 200
