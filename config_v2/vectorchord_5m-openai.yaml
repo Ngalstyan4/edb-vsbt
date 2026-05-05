@@ -56,5 +56,6 @@ vc-openai-5m-8000-test-ip:
     # 50-100-1.9:
     #   nprob: 50,100
     #   epsilon: 1.9
-    44-241:
+    44-241-1.0:
       nprob: 44,241
+      epsilon: 1.0
