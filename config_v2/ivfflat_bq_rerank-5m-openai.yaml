@@ -1,0 +1,14 @@
+ivfflat-bq-rerank-openai-5m-test:
+  indexType: ivfflat_bq_rerank
+  dataset: openai-5m-cos
+  datasetType: hdf5
+  metric: cos
+  lists: 8000 #
+  maintenance_work_mem: 24GB
+  pg_parallel_workers: 10
+  top: 10
+  benchmarks:
+    probes400-rerank20:
+      probes: 400
+      rerank_limit_amplify_factor: 20
+      scan_limit: 200
