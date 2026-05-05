@@ -342,7 +342,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
     @staticmethod
     def process_batch(args):
         """Process a batch of queries in parallel (two-stage BQ rerank)."""
-        test, answer, top, rerank_op, url, table_name, probes, dim, rerank_limit_amplify_factor, whpg = args
+        test, answer, top, rerank_op, url, table_name, probes, dim, rerank_limit_amplify_factor, scan_limit, whpg = args
 
         conn = psycopg.connect(url)
         conn.add_notice_handler(psql_log_handler);
@@ -351,6 +351,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             conn.execute("SET optimizer TO off")
         conn.execute("SET jit=false")
         conn.execute(f"SET ivfflat.probes TO {probes}")
+        conn.execute(f"SET ivfflat.scan_limit TO {scan_limit}")
 
         rerank_limit = top * rerank_limit_amplify_factor
 
@@ -401,6 +402,8 @@ class IVFFlatBQRerankTestSuite(TestSuite):
         """Prepare arguments for parallel batch processing."""
         rerank_op = self._get_metric_operator(metric)
         dim = test.shape[1]
+        suite_config = next(iter(self.config.values()))
+        scan_limit = benchmark.get("scan_limit", suite_config.get("scan_limit", 0))
         return (
             test,
             answer,
@@ -411,6 +414,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
             benchmark["probes"],
             dim,
             benchmark.get("rerank_limit_amplify_factor", 20),
+            scan_limit,
             self.whpg,
         )
 
@@ -496,6 +500,8 @@ class IVFFlatBQRerankTestSuite(TestSuite):
         conn.execute("SET jit=false")
         probes = benchmark["probes"]
         conn.execute(f"SET ivfflat.probes TO {probes}")
+        scan_limit = benchmark.get("scan_limit", self.config[name].get("scan_limit", 0))
+        conn.execute(f"SET ivfflat.scan_limit TO {scan_limit}")
         conn.execute("SET ivfflat.scan_stats TO on")
 
         rerank_op = self._get_metric_operator(metric)
