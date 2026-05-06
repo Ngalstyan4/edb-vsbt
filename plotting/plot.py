@@ -118,22 +118,51 @@ def _build_case_dim_map() -> dict[int, int]:
 _CASE_DIM = _build_case_dim_map()
 
 
-def pgvector_ivf_build_ram(N, C, D, quant="bit"):
-    """Estimate peak RAM (bytes) for pgvector IVF index build (Elkan k-means)."""
-    S = min(max(C * 50, 10000), N)
+HIERARCHY_THRESHOLD = 5000  # matches src/ivfflat.h IVFFLAT_HIERARCHY_THRESHOLD
+
+
+def _elkan_bytes(S, C, D, itemsize):
+    """Flat Elkan k-means peak, mirroring src/ivfkmeans.c:501-515."""
+    return (
+        S * itemsize
+        + 2 * C * itemsize
+        + 4 * S * C
+        + 4 * C * C
+        + 4 * C * D
+        + 8 * S
+        + 12 * C
+    )
+
+
+def pgvector_ivf_build_ram(N, C, D, quant="bit", skew=2.0):
+    """Estimate peak RAM (bytes) for pgvector IVF index build.
+
+    For lists < HIERARCHY_THRESHOLD: flat Elkan k-means.
+    For lists >= HIERARCHY_THRESHOLD: hierarchical (coarse + fine phases).
+    """
+    S = min(max(C * 50, 10_000), N)
     if quant == "bit":
         itemsize = ((D + 7) // 8 + 8 + 7) & ~7
     elif quant == "halfvec":
         itemsize = (8 + 2 * D + 7) & ~7
     else:  # float
-        itemsize = (8 + 4 * D + 7) & ~7
-    samples = S * itemsize
-    centers = 2 * C * itemsize
-    lower_bound = 4 * S * C
-    half_cdist = 4 * C * C
-    agg = 4 * C * D
-    rest = 4 * S * 2 + 4 * C * 3
-    return samples + centers + lower_bound + half_cdist + agg + rest
+        itemsize = 16 + 4 * D
+
+    if C < HIERARCHY_THRESHOLD:
+        peak = _elkan_bytes(S, C, D, itemsize)
+    else:
+        u = max(2, min(round(C ** 0.5), C))
+
+        coarse_S = min(u * 256, S)
+        coarse_peak = _elkan_bytes(coarse_S, u, D, itemsize)
+
+        fine_S = int(skew * S / u)
+        fine_C = int(skew * C / u)
+        fine_peak = _elkan_bytes(fine_S, fine_C, D, itemsize)
+
+        peak = max(coarse_peak, fine_peak)
+
+    return peak * 1.1
 
 
 def vchordrq_build_ram(N, C, D, F=256, T=1, D_k=None):
