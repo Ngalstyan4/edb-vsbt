@@ -1,0 +1,53 @@
+ivfflat-bq-rerank-openai-1536-5m-32k:
+  indexType: ivfflat_bq_rerank
+  dataset: openai-5m-cos
+  datasetType: hdf5
+  metric: cos
+  lists: 32768
+  maintenance_work_mem: 24GB
+  pg_parallel_workers: 10
+  scan_limit: 250
+  top: 10
+  benchmarks:
+    probes500-rerank20:
+      probes: 500
+      rerank_limit_amplify_factor: 20
+    probes500-rerank25:
+      probes: 500
+      rerank_limit_amplify_factor: 25
+    probes500-rerank30:
+      probes: 500
+      rerank_limit_amplify_factor: 30
+      scan_limit: 300
+    probes500-rerank30:
+      probes: 400
+      rerank_limit_amplify_factor: 30
+      scan_limit: 300
+    probes600-rerank20:
+      probes: 600
+      rerank_limit_amplify_factor: 20
+    probes400-rerank25:
+      probes: 400
+      rerank_limit_amplify_factor: 25
+    probes250-rerank25:
+      probes: 250
+      rerank_limit_amplify_factor: 25
+    15-30-1.9:
+      probes: 30
+      rerank_limit_amplify_factor: 25
+    20-40-1.9:
+      probes: 40
+      rerank_limit_amplify_factor: 25
+    38-76-1.9:
+      probes: 76
+      rerank_limit_amplify_factor: 25
+    50-100-1.9:
+      probes: 100
+      rerank_limit_amplify_factor: 25
+    65-130-1.9:
+      probes: 130
+      rerank_limit_amplify_factor: 100
+      scan_limit: 1000
+    80-160-1.9:
+      probes: 160
+      rerank_limit_amplify_factor: 25

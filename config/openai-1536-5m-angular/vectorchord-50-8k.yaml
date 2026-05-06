@@ -1,0 +1,65 @@
+vc-openai-1536-5m-50-8k:
+  dataset: openai-5m-cos
+  datasetType: hdf5
+  metric: dot
+  samplingFactor: 256 # Note: these are the settings to be reduced for faster execution on CPU
+  lists: [50, 8000]
+  residual_quantization: true
+  rerank_in_table: true
+  kmeans_hierarchical: true
+  pg_parallel_workers: 32
+  top: 10
+  benchmarks:
+    # 10-20-1.0:
+    #   nprob: 10,20
+    #   epsilon: 1.0
+    # 10-20-1.5:
+    #   nprob: 10,20
+    #   epsilon: 1.5
+    # 10-20-1.9:
+    #   nprob: 10,20
+    #   epsilon: 1.9
+    # 15-30-1.0:
+    #   nprob: 15,30
+    #   epsilon: 1.0
+    # 15-30-1.5:
+    #   nprob: 15,30
+    #   epsilon: 1.5
+    # 15-30-1.9:
+    #   nprob: 15,30
+    #   epsilon: 1.9
+    # 20-40-1.0:
+    #   nprob: 20,40
+    #   epsilon: 1.0
+    # 20-40-1.5:
+    #   nprob: 20,40
+    #   epsilon: 1.5
+    # 20-40-1.9:
+    #   nprob: 20,40
+    #   epsilon: 1.9
+    # 25-50-1.0:
+    #   nprob: 25,50
+    #   epsilon: 1.0
+    # 25-50-1.5:
+    #   nprob: 25,50
+    #   epsilon: 1.5
+    # 25-50-1.9:
+    #   nprob: 25,50
+    #   epsilon: 1.9
+    # 50-100-1.0:
+    #   nprob: 50,100
+    #   epsilon: 1.0
+    # 50-100-1.5:
+    #   nprob: 50,100
+    #   epsilon: 1.5
+    # 50-100-1.9:
+    #   nprob: 50,100
+    #   epsilon: 1.9
+    44-241-1.0:
+      nprob: 44,241
+      epsilon: 1.0
+
+    # found these params work well when cross checking with ../laion-5m-test-ip/vectorchord-50-8k.yaml
+    30-100-1.9:
+      nprob: 30,100
+      epsilon: 1.9
