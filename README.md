@@ -92,6 +92,7 @@ Configs are grouped by dataset (one directory per dataset, e.g. `config/sift-128
 | `--overwrite-table` | Drop existing table first | `false` |
 | `--debug` | Enable debug logging | `false` |
 | `--debug-single-query` | Repeat same query to diagnose latency issues | `false` |
+| `--warmup` | Cache warmup mode: `auto` / `off` / integer `N` (see [Cache warmup](#cache-warmup)) | `auto` |
 
 ### Running pgvector Benchmarks
 
@@ -147,6 +148,22 @@ python pgvector_suite.py -s config/laion-5m-test-ip/pgvector-m16-128.yaml \
     --skip-add-embeddings \
     --skip-index-creation
 ```
+
+### Cache warmup
+
+By default (`--warmup auto`), each benchmark point is preceded by a short adaptive warmup phase that runs queries until per-chunk QPS stabilizes (knee detector: two-window mean comparison, 5% tolerance). This eliminates the first-N-queries cold-cache penalty that otherwise depresses QPS and inflates P99, especially at low `efSearch` / `nprob` settings and on indexes larger than `shared_buffers`. `pg_prewarm` runs once per index; warmup queries run once per `(efSearch, nprob)` because each setting touches a different slice of the index.
+
+The probe pass in `--query-clients > 1` mode runs on a single connection to pick `N`, then each worker runs `N` warmup queries on its own connection so process-local CPU caches are warm before measurement. Warmup queries do **not** count toward `--max-queries`, and their latencies / results never enter the reported metrics — recall, QPS, P50 and P99 are computed solely from the measurement loop.
+
+Modes:
+
+| Value | Effect |
+|-------|--------|
+| `auto` (default) | `pg_prewarm` + adaptive query warmup per benchmark point |
+| `off` | Skip both `pg_prewarm` and warmup queries — useful for measuring cold-start behavior |
+| integer `N` | `pg_prewarm` + run exactly `N` warmup queries per benchmark point (skips knee detection) |
+
+Per-point summaries print as `[warmup] <name>: n=<count> {converged|capped|fixed} ...`. Use `--debug` to see the per-chunk `[warmup-trace]` lines for tuning the detector.
 
 ## Automated Benchmark Script
 

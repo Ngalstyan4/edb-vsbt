@@ -38,7 +38,7 @@ class TestSuite(common.TestSuite):
     @staticmethod
     def process_batch(args):
         """Process a batch of queries in parallel."""
-        test, answer, top, metric_ops, url, table_name, nprob, epsilon = args
+        test, answer, top, metric_ops, url, table_name, nprob, epsilon, warmup_n = args
 
         conn = psycopg.connect(url)
         pgvector.psycopg.register_vector(conn)
@@ -48,8 +48,16 @@ class TestSuite(common.TestSuite):
 
         query_sql = f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s LIMIT {top}"
 
-        results = []
         cursor = conn.cursor()
+
+        # Per-worker warmup; latencies/results discarded.
+        if warmup_n:
+            n_test = len(test)
+            for j in range(warmup_n):
+                cursor.execute(query_sql, (test[j % n_test],))
+                cursor.fetchall()
+
+        results = []
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
             cursor.execute(query_sql, (query,))
@@ -66,7 +74,8 @@ class TestSuite(common.TestSuite):
         conn.close()
         return results
 
-    def make_batch_args(self, test, answer, top, metric, table_name, benchmark):
+    def make_batch_args(self, test, answer, top, metric, table_name, benchmark,
+                        warmup_n=0):
         """Prepare arguments for parallel batch processing."""
         metric_ops = self._get_metric_operator(metric)
         return (
@@ -78,7 +87,13 @@ class TestSuite(common.TestSuite):
             table_name,
             benchmark["nprob"],
             benchmark["epsilon"],
+            warmup_n,
         )
+
+    def apply_session_guc(self, conn, benchmark):
+        conn.execute("SET jit=false")
+        conn.execute(f'SET vchordrq.probes="{benchmark["nprob"]}"')
+        conn.execute(f"SET vchordrq.epsilon={benchmark['epsilon']}")
 
     @staticmethod
     def _get_metric_operator(metric: str) -> str:
@@ -241,6 +256,10 @@ class TestSuite(common.TestSuite):
             f"metric: {metric}, metric_ops: {metric_ops}"
         )
 
+        self.warmup_for_benchmark(
+            conn, table_name, dataset, metric_ops, top, name
+        )
+
         return super().sequential_bench(
             name, table_name, conn, metric_ops, top, benchmark, dataset
         )
@@ -287,6 +306,7 @@ def main():
         debug_single_query=args.debug_single_query,
         build_only=args.build_only,
         max_queries=args.max_queries,
+        warmup=args.warmup,
     )
 
     test_suite.run()

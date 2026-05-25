@@ -138,6 +138,30 @@ def build_arg_parse(parser: argparse.ArgumentParser):
         required=False,
     )
 
+    parser.add_argument(
+        "--warmup",
+        type=str,
+        default="auto",
+        help=(
+            "Cache warmup mode: 'auto' (prewarm index + adaptive query warmup "
+            "per benchmark point, default), 'off' (skip both prewarm and "
+            "warmup queries), or an integer N (prewarm + run exactly N warmup "
+            "queries per benchmark point). Warmup queries do not count toward "
+            "--max-queries."
+        ),
+        required=False,
+    )
+
+
+# Warmup knee detector: stop when the trailing N-chunk mean QPS no longer
+# trends. Absolute latency-CV thresholds would never trip on HNSW because
+# per-query traversal variance is ~30% even with fully warm caches.
+WARMUP_CHUNK = 50
+WARMUP_CHUNKS_PER_WINDOW = 4
+WARMUP_QPS_TOLERANCE = 0.05
+WARMUP_MIN = 200
+WARMUP_MAX = 5000
+WARMUP_HARD_FLOOR = 100
 
 
 def get_keepalive_kwargs() -> dict:
@@ -234,7 +258,8 @@ class TestSuite:
                  overwrite_table: bool = False,
                  debug_single_query: bool = False,
                  build_only: bool = False,
-                 max_queries: int = None):
+                 max_queries: int = None,
+                 warmup: str = "auto"):
         self.suite_file = suite_file
         self.config = load_suite_config(suite_file)
         self.url = url
@@ -252,6 +277,8 @@ class TestSuite:
         self.debug_single_query = debug_single_query
         self.build_only = build_only
         self.max_queries = max_queries
+        self.warmup = self._parse_warmup(warmup)
+        self._warmup_q_stats = {}
 
         # Check if database is local or remote
         self.is_local_db = is_local_database(url)
@@ -281,8 +308,150 @@ class TestSuite:
         )
         return conn
 
-    def make_batch_args(self, test, answer, top, metric_ops, table_name, benchmark):
-        return test, answer, top, metric_ops, table_name
+    def make_batch_args(self, test, answer, top, metric_ops, table_name, benchmark,
+                        warmup_n=0):
+        return test, answer, top, metric_ops, table_name, warmup_n
+
+    def apply_session_guc(self, conn, benchmark):
+        """Apply per-benchmark session GUCs (probes/ef_search/etc).
+
+        Overridden per suite; called by the parallel warmup probe so the
+        warmup loop exercises the same code path as the measurement.
+        """
+        return
+
+    @staticmethod
+    def _parse_warmup(warmup):
+        if warmup is None:
+            return "auto"
+        if isinstance(warmup, int):
+            if warmup < 0:
+                raise ValueError(f"--warmup integer must be >= 0, got {warmup}")
+            return warmup
+        s = str(warmup).strip().lower()
+        if s in ("auto", "off"):
+            return s
+        try:
+            n = int(s)
+        except ValueError:
+            raise ValueError(
+                f"--warmup must be 'auto', 'off', or an integer; got {warmup!r}"
+            )
+        if n < 0:
+            raise ValueError(f"--warmup integer must be >= 0, got {n}")
+        return n
+
+    def warmup_for_benchmark(self, conn, table_name, dataset, metric_ops, top,
+                             benchmark_name):
+        """Run warmup queries on `conn`; returns (n_warmup_queries, converged).
+
+        The caller must apply per-benchmark GUCs on `conn` BEFORE invoking
+        this method. Warmup queries iterate dataset["test"] with wrap-around;
+        results and latencies are discarded.
+        """
+        if self.warmup == "off":
+            return 0, False
+        if self.debug_single_query:
+            # Repeating the same query is the whole point of that mode —
+            # warmup would defeat it.
+            return 0, False
+
+        test = dataset["test"]
+        n_test = test.shape[0] if hasattr(test, "shape") else len(test)
+        if n_test == 0:
+            return 0, False
+
+        query_sql = (
+            f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s "
+            f"LIMIT {top}"
+        )
+
+        cursor = conn.cursor()
+        latencies = []
+        converged = False
+
+        if isinstance(self.warmup, int):
+            target = self.warmup
+            min_n = target
+            max_n = target
+            check_cv = False
+        else:
+            target = WARMUP_MAX
+            min_n = WARMUP_MIN
+            max_n = WARMUP_MAX
+            check_cv = True
+
+        i = 0
+        chunk_qps_history = []
+        chunk_start_time = time.perf_counter()
+        chunk_count_at_start = 0
+        K = WARMUP_CHUNKS_PER_WINDOW
+        try:
+            while i < max_n:
+                q = test[i % n_test]
+                t0 = time.perf_counter()
+                cursor.execute(query_sql, (q,))
+                cursor.fetchall()
+                latencies.append(time.perf_counter() - t0)
+                i += 1
+
+                if not check_cv:
+                    continue
+                if i % WARMUP_CHUNK != 0:
+                    continue
+                now = time.perf_counter()
+                chunk_dt = now - chunk_start_time
+                chunk_n = i - chunk_count_at_start
+                chunk_qps = chunk_n / chunk_dt if chunk_dt > 0 else float("nan")
+                chunk_qps_history.append(chunk_qps)
+                chunk_start_time = now
+                chunk_count_at_start = i
+
+                drift = float("nan")
+                if len(chunk_qps_history) >= 2 * K:
+                    recent = chunk_qps_history[-K:]
+                    prior = chunk_qps_history[-2 * K:-K]
+                    recent_mean = sum(recent) / K
+                    prior_mean = sum(prior) / K
+                    if prior_mean > 0:
+                        drift = abs(recent_mean - prior_mean) / prior_mean
+
+                if self.debug:
+                    print(
+                        f"[warmup-trace] {benchmark_name} n={i} "
+                        f"chunk_qps={chunk_qps:.1f} drift={drift:.4f}"
+                    )
+
+                if i < max(min_n, WARMUP_HARD_FLOOR):
+                    continue
+                if not (drift == drift):  # NaN guard
+                    continue
+                if drift < WARMUP_QPS_TOLERANCE:
+                    converged = True
+                    break
+        finally:
+            cursor.close()
+
+        capped = (not converged and check_cv and i >= max_n)
+        if latencies:
+            ms = [x * 1000 for x in latencies]
+            ms_sorted = sorted(ms)
+            p50 = ms_sorted[len(ms_sorted) // 2]
+            total_s = sum(latencies)
+            qps = i / total_s if total_s > 0 else float("nan")
+            tag = "converged" if converged else ("capped" if capped else "fixed")
+            print(
+                f"[warmup] {benchmark_name}: n={i} {tag} "
+                f"p50={p50:.2f}ms qps={qps:.2f}"
+            )
+            self._warmup_q_stats[benchmark_name] = {
+                "n": i,
+                "converged": converged,
+                "capped": capped,
+                "p50_ms": p50,
+                "qps": qps,
+            }
+        return i, converged
 
     def check_index_fits_shared_buffers(self, conn, index_name: str, table_name: str):
         """Check if the index fits in shared_buffers and print size summary."""
@@ -646,17 +815,36 @@ class TestSuite:
         pbar.close()
         return results, metric_ops
 
-    def parallel_bench(self, name, table_name, dataset, metric_ops, top, query_clients, benchmark):
+    def parallel_bench(self, name, table_name, dataset, metric, top, query_clients, benchmark):
         test = dataset["test"]
         answer = dataset["answer"]
         m = test.shape[0]
         total_queries = m * query_clients
 
-        print(f"Running parallel benchmark with {query_clients} clients × {m} queries = {total_queries:,} total")
+        # Single-client probe picks N, then every worker runs N warmup
+        # queries. Probe latencies and results stay isolated from the
+        # measurement set returned below.
+        warmup_n = 0
+        if self.warmup != "off" and not self.debug_single_query:
+            probe_metric_ops = self._get_metric_operator(metric)
+            probe_conn = self.create_connection()
+            try:
+                self.apply_session_guc(probe_conn, benchmark)
+                warmup_n, _converged = self.warmup_for_benchmark(
+                    probe_conn, table_name, dataset, probe_metric_ops, top, name
+                )
+            finally:
+                probe_conn.close()
+
+        print(f"Running parallel benchmark with {query_clients} clients × {m} queries = {total_queries:,} total"
+              + (f" (warmup_n={warmup_n}/worker)" if warmup_n else ""))
 
         batches = []
         for _ in range(query_clients):
-            batch = self.make_batch_args(test, answer, top, metric_ops, table_name, benchmark)
+            batch = self.make_batch_args(
+                test, answer, top, metric, table_name, benchmark,
+                warmup_n=warmup_n,
+            )
             batches.append(batch)
 
         all_results = []
@@ -685,7 +873,7 @@ class TestSuite:
                     pbar.set_description(f"recall: {recall_color}{recall:.4f}\033[0m QPS: {qps:.2f} P50: {p50:.2f}ms")
 
         pbar.close()
-        return all_results, metric_ops
+        return all_results, self._get_metric_operator(metric)
 
     def run_benchmark(self, suite_name: str, name: str, table_name: str, result_dir: str, benchmark: dict,
                       dataset: dict, query_clients):
@@ -785,8 +973,10 @@ class TestSuite:
                        "test": dataset["test"][:self.max_queries],
                        "answer": dataset["answer"][:self.max_queries]}
 
-        # Prewarm index once before all benchmarks
-        self.prewarm_index(table_name)
+        if self.warmup == "off":
+            print("[warmup] mode=off: skipping pg_prewarm")
+        else:
+            self.prewarm_index(table_name)
 
         for name, benchmark in self.config[suite_name]["benchmarks"].items():
             print(f"Running benchmark: {benchmark}")
