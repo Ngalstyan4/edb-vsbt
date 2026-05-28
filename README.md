@@ -45,7 +45,7 @@ The `openai-*-cos` and `cohere-*-cos` datasets are stored as parquet files (`shu
 - If the AWS CLI (`aws`) is installed, files are fetched in parallel via `aws s3 sync`.
 - Otherwise, each expected file is downloaded one at a time over plain HTTPS from `*.s3.amazonaws.com` — slower, but no AWS CLI required.
 
-The 1M / 2M / 3M Cohere and 1M / 2M Openai variants are derived in-house from the larger 10M / 5M tables (see `derive_datasets.py`); ground-truth neighbors are recomputed against the subset, not the parent dataset.
+The 1M / 2M / 3M Cohere and 1M / 2M Openai variants are derived in-house as subsets of the larger 10M / 5M datasets, with ground-truth neighbors recomputed against the subset (not the parent dataset).
 
 ## Installation
 
@@ -298,7 +298,7 @@ vc-laion-5m-190-35k:
       epsilon: 1.9
 ```
 
-Parquet datasets (`datasetType: parquet`) accept an optional `rerank_in_table: true` flag — when set, VectorChord performs the final exact rerank pass against the heap table instead of the index, which is preferred for the high-dimensional cosine datasets.
+VectorChord configs accept an optional `rerank_in_table: true` flag — when set, the final exact rerank pass reads vectors from the heap table instead of from a copy stored inside the index, producing a smaller index at the cost of slower queries. **This is not the [recommended VectorChord default](https://docs.vectorchord.ai/vectorchord/usage/rerank-in-table.html)** and trades query latency for disk space; the existing parquet-dataset configs in this repo enable it for testing only.
 
 ### PGPU Configuration Example
 
