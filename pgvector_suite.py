@@ -25,7 +25,78 @@ def build_arg_parse():
     return parser
 
 
-class TestSuite(common.TestSuite):
+class PgvectorBaseTestSuite(common.TestSuite):
+    """
+    Shared base for all pgvector-backed suites (HNSW, IVFFlat, IVFFlat-BQ-Rerank).
+
+    Holds the bits that are identical across index types: extension setup,
+    connection helper that registers pgvector codecs, index prewarm, and the
+    metric → operator / opclass lookups.
+    """
+
+    @staticmethod
+    def _get_metric_operator(metric: str) -> str:
+        """Convert metric name to PostgreSQL operator."""
+        operators = {
+            "l2": "<->",
+            "euclidean": "<->",
+            "cos": "<=>",
+            "angular": "<=>",
+            "dot": "<#>",
+            "ip": "<#>",
+        }
+        if metric not in operators:
+            raise ValueError(f"Unsupported metric type: {metric}")
+        return operators[metric]
+
+    @staticmethod
+    def _get_metric_func(metric: str) -> str:
+        """Convert metric name to pgvector operator class."""
+        funcs = {
+            "l2": "vector_l2_ops",
+            "euclidean": "vector_l2_ops",
+            "cos": "vector_cosine_ops",
+            "ip": "vector_ip_ops",
+            "dot": "vector_ip_ops",
+        }
+        if metric not in funcs:
+            raise ValueError(f"Unsupported metric type: {metric}")
+        return funcs[metric]
+
+    def create_connection(self):
+        """Create a database connection with pgvector support."""
+        conn = super().create_connection()
+        pgvector.psycopg.register_vector(conn)
+        return conn
+
+    def init_ext(self, suite_name: str = None):
+        """Initialize required PostgreSQL extensions."""
+        conn = super().create_connection()
+        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
+        conn.close()
+        self.debug_log("Extensions initialized successfully.")
+
+    def prewarm_index(self, table_name: str):
+        """Prewarm the index into memory for consistent benchmarking."""
+        index_name = f"{table_name}_embedding_idx"
+        conn = self.create_connection()
+        self.check_index_fits_shared_buffers(conn, index_name, table_name)
+        print("Prewarming the index into shared_buffers...", end="", flush=True)
+        try:
+            prewarm_start = time.perf_counter()
+            conn.execute(f"SELECT pg_prewarm('{index_name}')")
+            prewarm_time = time.perf_counter() - prewarm_start
+            print(f" done! ({prewarm_time:.1f}s)")
+        except psycopg.Error as e:
+            print(f" failed! ({e.diag.message_primary})")
+            self.debug_log(f"Prewarm failed: {e}")
+
+        finally:
+            conn.close()
+
+
+class HNSWTestSuite(PgvectorBaseTestSuite):
     """
     Test suite for pgvector HNSW indexing.
 
@@ -90,67 +161,6 @@ class TestSuite(common.TestSuite):
     def apply_session_guc(self, conn, benchmark):
         conn.execute(f"SET hnsw.ef_search={benchmark['efSearch']}")
         conn.execute("SET enable_seqscan = off")
-
-    @staticmethod
-    def _get_metric_operator(metric: str) -> str:
-        """Convert metric name to PostgreSQL operator."""
-        operators = {
-            "l2": "<->",
-            "euclidean": "<->",
-            "cos": "<=>",
-            "angular": "<=>",
-            "dot": "<#>",
-            "ip": "<#>",
-        }
-        if metric not in operators:
-            raise ValueError(f"Unsupported metric type: {metric}")
-        return operators[metric]
-
-    @staticmethod
-    def _get_metric_func(metric: str) -> str:
-        """Convert metric name to pgvector operator class."""
-        funcs = {
-            "l2": "vector_l2_ops",
-            "euclidean": "vector_l2_ops",
-            "cos": "vector_cosine_ops",
-            "ip": "vector_ip_ops",
-            "dot": "vector_ip_ops",
-        }
-        if metric not in funcs:
-            raise ValueError(f"Unsupported metric type: {metric}")
-        return funcs[metric]
-
-    def create_connection(self):
-        """Create a database connection with pgvector support."""
-        conn = super().create_connection()
-        pgvector.psycopg.register_vector(conn)
-        return conn
-
-    def init_ext(self, suite_name: str = None):
-        """Initialize required PostgreSQL extensions."""
-        conn = super().create_connection()
-        conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-        conn.execute("CREATE EXTENSION IF NOT EXISTS pg_prewarm")
-        conn.close()
-        self.debug_log("Extensions initialized successfully.")
-
-    def prewarm_index(self, table_name: str):
-        """Prewarm the index into memory for consistent benchmarking."""
-        index_name = f"{table_name}_embedding_idx"
-        conn = self.create_connection()
-        self.check_index_fits_shared_buffers(conn, index_name, table_name)
-        print("Prewarming the index into shared_buffers...", end="", flush=True)
-        try:
-            prewarm_start = time.perf_counter()
-            conn.execute(f"SELECT pg_prewarm('{index_name}')")
-            prewarm_time = time.perf_counter() - prewarm_start
-            print(f" done! ({prewarm_time:.1f}s)")
-        except psycopg.Error as e:
-            print(f" failed! ({e.diag.message_primary})")
-            self.debug_log(f"Prewarm failed: {e}")
-
-        finally:
-            conn.close()
 
     @staticmethod
     def estimate_hnsw_graph_memory(num_vectors: int, dim: int, m: int) -> int:
@@ -322,14 +332,12 @@ class TestSuite(common.TestSuite):
             )
 
 
-class IVFFlatTestSuite(TestSuite):
+class IVFFlatTestSuite(PgvectorBaseTestSuite):
     """
     Test suite for vanilla IVFFlat indexing.
 
     Single-stage `ORDER BY embedding <op> q LIMIT k` against an IVFFlat
-    index on the float vector column. Inherits init_ext, create_connection,
-    prewarm_index, sequential_bench, and metric helpers from the HNSW
-    TestSuite; only the index DDL, session GUCs, and process_batch differ.
+    index on the float vector column.
     """
 
     @staticmethod
@@ -389,7 +397,7 @@ class IVFFlatTestSuite(TestSuite):
 
     def create_index(self, suite_name: str, table_name: str, dataset: dict):
         """Create a vanilla IVFFlat index on the float vector column."""
-        event, index_monitor_thread = super(TestSuite, self).create_index(
+        event, index_monitor_thread = super().create_index(
             suite_name, table_name, dataset
         )
 
@@ -457,8 +465,8 @@ class IVFFlatTestSuite(TestSuite):
             conn, table_name, dataset, metric_ops, top, name
         )
 
-        return common.TestSuite.sequential_bench(
-            self, name, table_name, conn, metric_ops, top, benchmark, dataset
+        return super().sequential_bench(
+            name, table_name, conn, metric_ops, top, benchmark, dataset
         )
 
     def generate_markdown_result(self):
@@ -481,7 +489,7 @@ class IVFFlatTestSuite(TestSuite):
             )
 
 
-class IVFFlatBQRerankTestSuite(TestSuite):
+class IVFFlatBQRerankTestSuite(PgvectorBaseTestSuite):
     """
     Test suite for IVFFlat with binary quantization and exact rerank.
 
@@ -578,7 +586,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
 
     def create_index(self, suite_name: str, table_name: str, dataset: dict):
         """Create an IVFFlat expression index on binary_quantize(embedding)."""
-        event, index_monitor_thread = super(TestSuite, self).create_index(
+        event, index_monitor_thread = super().create_index(
             suite_name, table_name, dataset
         )
 
@@ -736,7 +744,7 @@ class IVFFlatBQRerankTestSuite(TestSuite):
 
 
 SUITE_DISPATCH = {
-    "hnsw": TestSuite,
+    "hnsw": HNSWTestSuite,
     "ivfflat": IVFFlatTestSuite,
     "ivfflat_bq_rerank": IVFFlatBQRerankTestSuite,
 }
