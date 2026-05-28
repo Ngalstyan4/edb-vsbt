@@ -197,6 +197,7 @@ class TestSuite(common.TestSuite):
         kmeans_dimension = config.get("kmeans_dimension", dataset["dim"])
         sampling_factor = config["samplingFactor"]
         residual_quantization = config["residual_quantization"]
+        rerank_in_table = config.get("rerank_in_table")
         metric = dataset["metric"]
 
         num_vectors = dataset.get("num", 0)
