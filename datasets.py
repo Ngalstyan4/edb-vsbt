@@ -75,7 +75,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 1536,
         "num": 500_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/openai/openai_medium_500k",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/openai/openai_medium_500k",
         "base_dir": os.path.join(DATA_DIR, "openai/openai_medium_500k"),
     },
     "openai-1m-cos": {
@@ -83,7 +83,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 1536,
         "num": 1_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/openai/openai_small_1m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/openai/openai_small_1m",
         "base_dir": os.path.join(DATA_DIR, "openai/openai_small_1m"),
     },
     "openai-2m-cos": {
@@ -91,7 +91,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 1536,
         "num": 2_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/openai/openai_medium_2m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/openai/openai_medium_2m",
         "base_dir": os.path.join(DATA_DIR, "openai/openai_medium_2m"),
     },
     "openai-5m-cos": {
@@ -99,7 +99,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 1536,
         "num": 5_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/openai/openai_large_5m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/openai/openai_large_5m",
         "base_dir": os.path.join(DATA_DIR, "openai/openai_large_5m"),
     },
     "cohere-1m-cos": {
@@ -107,7 +107,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 768,
         "num": 1_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/cohere/cohere_medium_1m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/cohere/cohere_medium_1m",
         "base_dir": os.path.join(DATA_DIR, "cohere/cohere_medium_1m"),
     },
     "cohere-2m-cos": {
@@ -115,7 +115,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 768,
         "num": 2_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/cohere/cohere_small_2m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/cohere/cohere_small_2m",
         "base_dir": os.path.join(DATA_DIR, "cohere/cohere_small_2m"),
     },
     "cohere-3m-cos": {
@@ -123,7 +123,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 768,
         "num": 3_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/cohere/cohere_medium_3m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/cohere/cohere_medium_3m",
         "base_dir": os.path.join(DATA_DIR, "cohere/cohere_medium_3m"),
     },
     "cohere-10m-cos": {
@@ -131,7 +131,7 @@ DATASETS = {
         "metric": "cos",
         "dim": 768,
         "num": 10_000_000,
-        "s3_prefix": "s3://vector-engine-public-test-artifacts-211125372052-us-east-1-an/cohere/cohere_large_10m",
+        "s3_prefix": "s3://enterprisedb-vector-datasets/cohere/cohere_large_10m",
         "base_dir": os.path.join(DATA_DIR, "cohere/cohere_large_10m"),
     },
 
