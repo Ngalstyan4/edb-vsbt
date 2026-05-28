@@ -23,8 +23,29 @@ A comprehensive benchmarking tool for PostgreSQL vector search extensions. Compa
 | sift-128-euclidean | 1M | 128 | L2 | HDF5 |
 | glove-100-angular | 1.2M | 100 | Cosine | HDF5 |
 | gist-960-euclidean | 1M | 960 | L2 | HDF5 |
+| openai-500k-cos | 500K | 1536 | Cosine | Parquet |
+| openai-1m-cos | 1M | 1536 | Cosine | Parquet |
+| openai-2m-cos | 2M | 1536 | Cosine | Parquet |
+| openai-5m-cos | 5M | 1536 | Cosine | Parquet |
+| cohere-1m-cos | 1M | 768 | Cosine | Parquet |
+| cohere-2m-cos | 2M | 768 | Cosine | Parquet |
+| cohere-3m-cos | 3M | 768 | Cosine | Parquet |
+| cohere-10m-cos | 10M | 768 | Cosine | Parquet |
 
-Datasets are automatically downloaded on first use.
+Datasets are automatically downloaded on first use into `./datasets` (relative to the working directory). To use a different location — e.g. a dedicated data volume — set `DATASET_LOCAL_DIR` before running any suite. This applies to **all** dataset types (HDF5, NPY, parquet) and all suites:
+
+```bash
+export DATASET_LOCAL_DIR=/data/datasets
+```
+
+### Parquet datasets (OpenAI / Cohere)
+
+The `openai-*-cos` and `cohere-*-cos` datasets are stored as parquet files (`shuffle_train-*.parquet`, `test.parquet`, `neighbors.parquet`) in a public S3 bucket. The download path is chosen at runtime:
+
+- If the AWS CLI (`aws`) is installed, files are fetched in parallel via `aws s3 sync`.
+- Otherwise, each expected file is downloaded one at a time over plain HTTPS from `*.s3.amazonaws.com` — slower, but no AWS CLI required.
+
+The 1M / 2M / 3M Cohere and 1M / 2M Openai variants are derived in-house from the larger 10M / 5M tables (see `derive_datasets.py`); ground-truth neighbors are recomputed against the subset, not the parent dataset.
 
 ## Installation
 
@@ -277,6 +298,8 @@ vc-laion-5m-190-35k:
       epsilon: 1.9
 ```
 
+Parquet datasets (`datasetType: parquet`) accept an optional `rerank_in_table: true` flag — when set, VectorChord performs the final exact rerank pass against the heap table instead of the index, which is preferred for the high-dimensional cosine datasets.
+
 ### PGPU Configuration Example
 
 ```yaml
@@ -439,7 +462,15 @@ vector-search/
 │   ├── laion-20m-test-ip/
 │   ├── laion-100m-test-ip/
 │   ├── laion-400m-test-ip/
-│   └── deep1b-test-l2/
+│   ├── deep1b-test-l2/
+│   ├── openai-500k-cos/
+│   ├── openai-1m-cos/
+│   ├── openai-2m-cos/
+│   ├── openai-5m-cos/
+│   ├── cohere-1m-cos/
+│   ├── cohere-2m-cos/
+│   ├── cohere-3m-cos/
+│   └── cohere-10m-cos/
 ├── monitor/
 │   ├── __init__.py           # Monitor package
 │   ├── system_monitor.py     # System metrics (psutil-based)
