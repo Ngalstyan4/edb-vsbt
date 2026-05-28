@@ -1,15 +1,18 @@
 """
 pgvector Benchmark Suite
 
-Benchmarks vector search using the pgvector extension with HNSW indexes
-for PostgreSQL.
+Benchmarks vector search using the pgvector extension with HNSW or
+IVFFlat indexes (vanilla and BQ + rerank variants) for PostgreSQL.
 """
 
 import argparse
+import math
 import time
 
+import numpy as np
 import psycopg
 import pgvector.psycopg
+from tqdm import tqdm
 
 import common
 from results import ResultsManager
@@ -319,12 +322,442 @@ class TestSuite(common.TestSuite):
             )
 
 
+class IVFFlatTestSuite(TestSuite):
+    """
+    Test suite for vanilla IVFFlat indexing.
+
+    Single-stage `ORDER BY embedding <op> q LIMIT k` against an IVFFlat
+    index on the float vector column. Inherits init_ext, create_connection,
+    prewarm_index, sequential_bench, and metric helpers from the HNSW
+    TestSuite; only the index DDL, session GUCs, and process_batch differ.
+    """
+
+    @staticmethod
+    def process_batch(args):
+        """Process a batch of queries in parallel."""
+        test, answer, top, metric_ops, url, table_name, probes, warmup_n = args
+
+        conn = psycopg.connect(url)
+        pgvector.psycopg.register_vector(conn)
+        conn.execute(f"SET ivfflat.probes TO {probes}")
+        conn.execute("SET enable_seqscan = off")
+
+        query_sql = f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s LIMIT {top}"
+
+        cursor = conn.cursor()
+
+        if warmup_n:
+            n_test = len(test)
+            for j in range(warmup_n):
+                cursor.execute(query_sql, (test[j % n_test],))
+                cursor.fetchall()
+
+        results = []
+        for query, ground_truth in zip(test, answer):
+            start = time.perf_counter()
+            cursor.execute(query_sql, (query,))
+            result = cursor.fetchall()
+            end = time.perf_counter()
+
+            result_ids = {p[0] for p in result[:top]}
+            gt_ids = ground_truth[:top]
+            ground_truth_ids = set(gt_ids.tolist() if hasattr(gt_ids, "tolist") else gt_ids)
+            hit = len(result_ids & ground_truth_ids)
+            results.append((hit, (start, end)))
+
+        cursor.close()
+        conn.close()
+        return results
+
+    def make_batch_args(self, test, answer, top, metric, table_name, benchmark,
+                        warmup_n=0):
+        metric_ops = self._get_metric_operator(metric)
+        return (
+            test,
+            answer,
+            top,
+            metric_ops,
+            self.url,
+            table_name,
+            benchmark["probes"],
+            warmup_n,
+        )
+
+    def apply_session_guc(self, conn, benchmark):
+        conn.execute(f"SET ivfflat.probes TO {benchmark['probes']}")
+        conn.execute("SET enable_seqscan = off")
+
+    def create_index(self, suite_name: str, table_name: str, dataset: dict):
+        """Create a vanilla IVFFlat index on the float vector column."""
+        event, index_monitor_thread = super(TestSuite, self).create_index(
+            suite_name, table_name, dataset
+        )
+
+        config = self.config[suite_name]
+        pg_parallel_workers = config.get("pg_parallel_workers", 2)
+        lists = config["lists"]
+        if lists == "auto":
+            lists = max(1, int(math.sqrt(dataset["num"])))
+        metric = dataset["metric"]
+        metric_func = self._get_metric_func(metric)
+        maintenance_work_mem = config.get("maintenance_work_mem")
+
+        if self.debug:
+            print(f"\n🔧 Index Configuration (IVFFlat):")
+            print(f"    • Lists:           {lists}")
+            print(f"    • Metric Function: {metric_func}")
+            print()
+
+        self.results[suite_name]["lists"] = lists
+
+        conn = self.create_connection()
+        start_time = time.perf_counter()
+
+        if maintenance_work_mem:
+            conn.execute(f"SET maintenance_work_mem TO '{maintenance_work_mem}'")
+        conn.execute(f"SET max_parallel_maintenance_workers TO {pg_parallel_workers}")
+        conn.execute(f"SET max_parallel_workers TO {pg_parallel_workers}")
+        conn.execute(
+            f"CREATE INDEX {table_name}_embedding_idx ON {table_name} "
+            f"USING ivfflat (embedding {metric_func}) WITH (lists = {lists})"
+        )
+
+        build_time = int(round(time.perf_counter() - start_time))
+        self.results[suite_name]["index_build_time"] = build_time
+
+        event.set()
+        index_monitor_thread.join()
+
+        print(f"Index build time: {build_time}s")
+
+        conn.execute("CHECKPOINT")
+        conn.close()
+        print("Index built successfully.")
+
+    def sequential_bench(
+        self,
+        name: str,
+        table_name: str,
+        conn: psycopg.Connection,
+        metric: str,
+        top: int,
+        benchmark: dict,
+        dataset: dict,
+    ) -> tuple[list[tuple[int, float]], str]:
+        """Run sequential benchmark queries with IVFFlat probes set."""
+        self.apply_session_guc(conn, benchmark)
+        metric_ops = self._get_metric_operator(metric)
+
+        self.debug_log(
+            f"Benchmark config: probes={benchmark['probes']}, "
+            f"metric={metric}, metric_ops={metric_ops}"
+        )
+
+        self.warmup_for_benchmark(
+            conn, table_name, dataset, metric_ops, top, name
+        )
+
+        return common.TestSuite.sequential_bench(
+            self, name, table_name, conn, metric_ops, top, benchmark, dataset
+        )
+
+    def generate_markdown_result(self):
+        """Generate benchmark results with charts and consolidated CSV."""
+        self.debug_log(f"Results: {self.results}")
+
+        results_manager = ResultsManager()
+
+        for suite_name in self.config:
+            system_metrics, pg_stats, dashboard_path = self.get_monitoring_data(suite_name)
+
+            results_manager.process_suite_results(
+                suite_type="ivfflat",
+                config={suite_name: self.config[suite_name]},
+                results={suite_name: self.results.get(suite_name, {})},
+                query_clients=self.query_clients,
+                system_metrics=system_metrics,
+                pg_stats=pg_stats,
+                system_dashboard_path=dashboard_path,
+            )
+
+
+class IVFFlatBQRerankTestSuite(TestSuite):
+    """
+    Test suite for IVFFlat with binary quantization and exact rerank.
+
+    Builds an IVFFlat index on `binary_quantize(embedding)::bit(dim)` with
+    Hamming distance, then queries in two stages: a fast BQ scan returning
+    `top * rerank_limit_amplify_factor` candidates, followed by an exact
+    rerank using the configured metric on the original `vector` column.
+    """
+
+    DEFAULT_RERANK_AMP = 20
+
+    @staticmethod
+    def _two_stage_query_sql(table_name: str, dim: int, rerank_op: str, top: int) -> str:
+        return (
+            f"SELECT id FROM ("
+            f"SELECT id, embedding FROM {table_name} "
+            f"ORDER BY binary_quantize(embedding)::bit({dim}) <~> "
+            f"binary_quantize(%s::vector({dim}))::bit({dim}) "
+            f"LIMIT %s::int"
+            f") sub "
+            f"ORDER BY embedding {rerank_op} %s::vector({dim}) "
+            f"LIMIT {top}"
+        )
+
+    @staticmethod
+    def process_batch(args):
+        """Process a batch of queries in parallel (two-stage BQ rerank)."""
+        (test, answer, top, rerank_op, url, table_name, probes, dim,
+         rerank_amp, warmup_n) = args
+
+        conn = psycopg.connect(url)
+        pgvector.psycopg.register_vector(conn)
+        conn.execute(f"SET ivfflat.probes TO {probes}")
+
+        rerank_limit = top * rerank_amp
+        query_sql = IVFFlatBQRerankTestSuite._two_stage_query_sql(
+            table_name, dim, rerank_op, top
+        )
+        bind = lambda q: (q, rerank_limit, q)
+
+        cursor = conn.cursor()
+
+        if warmup_n:
+            n_test = len(test)
+            for j in range(warmup_n):
+                cursor.execute(query_sql, bind(test[j % n_test]))
+                cursor.fetchall()
+
+        results = []
+        for query, ground_truth in zip(test, answer):
+            start = time.perf_counter()
+            cursor.execute(query_sql, bind(query))
+            result = cursor.fetchall()
+            end = time.perf_counter()
+
+            result_ids = {p[0] for p in result[:top]}
+            gt_ids = ground_truth[:top]
+            ground_truth_ids = set(gt_ids.tolist() if hasattr(gt_ids, "tolist") else gt_ids)
+            hit = len(result_ids & ground_truth_ids)
+            results.append((hit, (start, end)))
+
+        cursor.close()
+        conn.close()
+        return results
+
+    def make_batch_args(self, test, answer, top, metric, table_name, benchmark,
+                        warmup_n=0):
+        rerank_op = self._get_metric_operator(metric)
+        dim = test.shape[1]
+        return (
+            test,
+            answer,
+            top,
+            rerank_op,
+            self.url,
+            table_name,
+            benchmark["probes"],
+            dim,
+            benchmark.get("rerank_limit_amplify_factor", self.DEFAULT_RERANK_AMP),
+            warmup_n,
+        )
+
+    def apply_session_guc(self, conn, benchmark):
+        conn.execute(f"SET ivfflat.probes TO {benchmark['probes']}")
+
+    def warmup_query(self, table_name, dataset, metric_ops, top, benchmark):
+        dim = dataset["dim"]
+        rerank_amp = (benchmark or {}).get(
+            "rerank_limit_amplify_factor", self.DEFAULT_RERANK_AMP
+        )
+        rerank_limit = top * rerank_amp
+        sql = self._two_stage_query_sql(table_name, dim, metric_ops, top)
+        return sql, (lambda q: (q, rerank_limit, q))
+
+    def create_index(self, suite_name: str, table_name: str, dataset: dict):
+        """Create an IVFFlat expression index on binary_quantize(embedding)."""
+        event, index_monitor_thread = super(TestSuite, self).create_index(
+            suite_name, table_name, dataset
+        )
+
+        config = self.config[suite_name]
+        pg_parallel_workers = config.get("pg_parallel_workers", 2)
+        lists = config["lists"]
+        if lists == "auto":
+            lists = max(1, int(math.sqrt(dataset["num"])))
+        dim = dataset["dim"]
+        maintenance_work_mem = config.get("maintenance_work_mem")
+
+        if self.debug:
+            print(f"\n🔧 Index Configuration (IVFFlat BQ Rerank):")
+            print(f"    • Lists:           {lists}")
+            print(f"    • Dimensions:      {dim}")
+            print()
+
+        self.results[suite_name]["lists"] = lists
+
+        conn = self.create_connection()
+        start_time = time.perf_counter()
+
+        if maintenance_work_mem:
+            conn.execute(f"SET maintenance_work_mem TO '{maintenance_work_mem}'")
+        conn.execute(f"SET max_parallel_maintenance_workers TO {pg_parallel_workers}")
+        conn.execute(f"SET max_parallel_workers TO {pg_parallel_workers}")
+        conn.execute(
+            f"CREATE INDEX {table_name}_embedding_idx ON {table_name} "
+            f"USING ivfflat ((binary_quantize(embedding)::bit({dim})) bit_hamming_ops) "
+            f"WITH (lists = {lists})"
+        )
+
+        build_time = int(round(time.perf_counter() - start_time))
+        self.results[suite_name]["index_build_time"] = build_time
+
+        event.set()
+        index_monitor_thread.join()
+
+        print(f"Index build time: {build_time}s")
+
+        conn.execute("CHECKPOINT")
+        conn.close()
+        print("Index built successfully.")
+
+    def sequential_bench(
+        self,
+        name: str,
+        table_name: str,
+        conn: psycopg.Connection,
+        metric: str,
+        top: int,
+        benchmark: dict,
+        dataset: dict,
+    ) -> tuple[list[tuple[int, float]], str]:
+        """Run sequential benchmark with two-stage BQ rerank query."""
+        conn.execute("SET jit=false")
+        self.apply_session_guc(conn, benchmark)
+
+        rerank_op = self._get_metric_operator(metric)
+        dim = dataset["dim"]
+        rerank_amp = benchmark.get(
+            "rerank_limit_amplify_factor", self.DEFAULT_RERANK_AMP
+        )
+        rerank_limit = top * rerank_amp
+
+        self.debug_log(
+            f"Benchmark config: probes={benchmark['probes']}, "
+            f"rerank_limit_amplify_factor={rerank_amp}, "
+            f"metric={metric}, rerank_op={rerank_op}, dim={dim}"
+        )
+
+        self.warmup_for_benchmark(
+            conn, table_name, dataset, rerank_op, top, name,
+            benchmark=benchmark,
+        )
+
+        query_sql = self._two_stage_query_sql(table_name, dim, rerank_op, top)
+
+        m = dataset["test"].shape[0]
+
+        if self.debug_single_query:
+            print(f"Running DEBUG single-query benchmark ({m} iterations of same query)")
+            single_query = dataset["test"][0]
+            single_answer = dataset["answer"][0][:top]
+            if hasattr(single_answer, "tolist"):
+                single_answer = single_answer.tolist()
+        else:
+            print(f"Running sequential benchmark with {m} queries")
+
+        answers_list = dataset["answer"]
+        if hasattr(answers_list, "tolist"):
+            answers_list = [a[:top].tolist() if hasattr(a, "tolist") else a[:top] for a in answers_list]
+
+        results = []
+        latencies = []
+        total_hits = 0
+        total_time = 0.0
+
+        cursor = conn.cursor()
+
+        pbar = tqdm(range(m), total=m, ncols=80,
+                    bar_format="{desc} {n}/{total}: {percentage:3.0f}%|{bar}|")
+        for i in pbar:
+            query = single_query if self.debug_single_query else dataset["test"][i]
+
+            start = time.perf_counter()
+            cursor.execute(query_sql, (query, rerank_limit, query))
+            result = cursor.fetchall()
+            end = time.perf_counter()
+
+            query_time = end - start
+            latencies.append(query_time)
+            total_time += query_time
+
+            if self.debug_single_query:
+                answers = single_answer
+            else:
+                answers = answers_list[i] if isinstance(answers_list, list) else answers_list[i][:top]
+                if hasattr(answers, "tolist"):
+                    answers = answers.tolist()
+
+            hit = len({p[0] for p in result[:top]} & set(answers))
+            total_hits += hit
+            results.append((hit, query_time))
+
+            if (i + 1) % 50 == 0 or i == m - 1:
+                curr_recall = total_hits / (top * (i + 1))
+                curr_qps = (i + 1) / total_time
+                curr_p50 = np.percentile(latencies, 50) * 1000
+                recall_color = "\033[92m" if curr_recall >= 0.95 else "\033[91m"
+                pbar.set_description(f"recall: {recall_color}{curr_recall:.4f}\033[0m QPS: {curr_qps:.2f} P50: {curr_p50:.2f}ms")
+
+        cursor.close()
+        pbar.close()
+        return results, rerank_op
+
+    def generate_markdown_result(self):
+        """Generate benchmark results with charts and consolidated CSV."""
+        self.debug_log(f"Results: {self.results}")
+
+        results_manager = ResultsManager()
+
+        for suite_name in self.config:
+            system_metrics, pg_stats, dashboard_path = self.get_monitoring_data(suite_name)
+
+            results_manager.process_suite_results(
+                suite_type="ivfflat_bq_rerank",
+                config={suite_name: self.config[suite_name]},
+                results={suite_name: self.results.get(suite_name, {})},
+                query_clients=self.query_clients,
+                system_metrics=system_metrics,
+                pg_stats=pg_stats,
+                system_dashboard_path=dashboard_path,
+            )
+
+
+SUITE_DISPATCH = {
+    "hnsw": TestSuite,
+    "ivfflat": IVFFlatTestSuite,
+    "ivfflat_bq_rerank": IVFFlatBQRerankTestSuite,
+}
+
+
 def main():
     """Main entry point for pgvector benchmark suite."""
     parser = build_arg_parse()
     args = parser.parse_args()
 
-    test_suite = TestSuite(
+    config = common.load_suite_config(args.suite)
+    first_suite = next(iter(config.values()))
+    index_type = first_suite.get("indexType", "hnsw")
+    if index_type not in SUITE_DISPATCH:
+        raise ValueError(
+            f"Unknown indexType {index_type!r}; "
+            f"expected one of {sorted(SUITE_DISPATCH)}"
+        )
+    suite_cls = SUITE_DISPATCH[index_type]
+
+    test_suite = suite_cls(
         suite_file=args.suite,
         url=args.url,
         devices=args.devices,

@@ -341,8 +341,20 @@ class TestSuite:
             raise ValueError(f"--warmup integer must be >= 0, got {n}")
         return n
 
+    def warmup_query(self, table_name, dataset, metric_ops, top, benchmark):
+        """Return (sql, bind_fn) for warmup queries.
+
+        Subclasses with multi-stage queries override this so the warmup
+        loop exercises the same plan as the measurement loop.
+        """
+        sql = (
+            f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s "
+            f"LIMIT {top}"
+        )
+        return sql, (lambda q: (q,))
+
     def warmup_for_benchmark(self, conn, table_name, dataset, metric_ops, top,
-                             benchmark_name):
+                             benchmark_name, benchmark=None):
         """Run warmup queries on `conn`; returns (n_warmup_queries, converged).
 
         The caller must apply per-benchmark GUCs on `conn` BEFORE invoking
@@ -361,9 +373,8 @@ class TestSuite:
         if n_test == 0:
             return 0, False
 
-        query_sql = (
-            f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s "
-            f"LIMIT {top}"
+        query_sql, bind_fn = self.warmup_query(
+            table_name, dataset, metric_ops, top, benchmark
         )
 
         cursor = conn.cursor()
@@ -390,7 +401,7 @@ class TestSuite:
             while i < max_n:
                 q = test[i % n_test]
                 t0 = time.perf_counter()
-                cursor.execute(query_sql, (q,))
+                cursor.execute(query_sql, bind_fn(q))
                 cursor.fetchall()
                 latencies.append(time.perf_counter() - t0)
                 i += 1
@@ -831,7 +842,8 @@ class TestSuite:
             try:
                 self.apply_session_guc(probe_conn, benchmark)
                 warmup_n, _converged = self.warmup_for_benchmark(
-                    probe_conn, table_name, dataset, probe_metric_ops, top, name
+                    probe_conn, table_name, dataset, probe_metric_ops, top, name,
+                    benchmark=benchmark,
                 )
             finally:
                 probe_conn.close()
@@ -923,6 +935,10 @@ class TestSuite:
         first_bench = next(iter(benchmarks.values()))
         has_ef_search = "efSearch" in first_bench
         has_nprob = "nprob" in first_bench
+        has_probes = "probes" in first_bench
+        has_rerank_amp = has_probes and any(
+            "rerank_limit_amplify_factor" in b for b in benchmarks.values()
+        )
 
         # Build header and rows
         if has_ef_search:
@@ -931,6 +947,12 @@ class TestSuite:
         elif has_nprob:
             header = "| Probes    | Epsilon | Recall | QPS    | P50 (ms) | P99 (ms) |"
             sep =    "|-----------|---------|--------|--------|----------|----------|"
+        elif has_rerank_amp:
+            header = "| Probes | Rerank Amp | Recall | QPS    | P50 (ms) | P99 (ms) |"
+            sep =    "|--------|------------|--------|--------|----------|----------|"
+        elif has_probes:
+            header = "| Probes | Recall | QPS    | P50 (ms) | P99 (ms) |"
+            sep =    "|--------|--------|--------|----------|----------|"
         else:
             return
 
@@ -959,6 +981,19 @@ class TestSuite:
             elif has_nprob:
                 print(f"| {benchmark['nprob']:<9} "
                       f"| {benchmark['epsilon']:<7} "
+                      f"| {r['recall']:.4f} "
+                      f"| {r['qps']:>6.2f} "
+                      f"| {r['p50_latency']:>8.2f} "
+                      f"| {r['p99_latency']:>8.2f} |")
+            elif has_rerank_amp:
+                print(f"| {benchmark['probes']:<6} "
+                      f"| {benchmark.get('rerank_limit_amplify_factor', 20):<10} "
+                      f"| {r['recall']:.4f} "
+                      f"| {r['qps']:>6.2f} "
+                      f"| {r['p50_latency']:>8.2f} "
+                      f"| {r['p99_latency']:>8.2f} |")
+            elif has_probes:
+                print(f"| {benchmark['probes']:<6} "
                       f"| {r['recall']:.4f} "
                       f"| {r['qps']:>6.2f} "
                       f"| {r['p50_latency']:>8.2f} "
