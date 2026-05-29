@@ -34,6 +34,66 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 
+# Per-suite_type config + benchmark column specs for markdown rendering.
+# `config_columns` -> rows in the per-run "Configuration" table (label,
+# extractor over the suite config dict; results dict is also passed for
+# post-build values like discovered "lists").
+# `bench_columns` -> columns in the per-run + consolidated benchmark
+# tables (header, extractor over the benchmark dict).
+SUITE_RENDER_SPECS = {
+    "pgvector": {
+        "config_columns": [
+            ("M",               lambda c, r: str(c.get("m", "N/A"))),
+            ("EF Construction", lambda c, r: str(c.get("efConstruction", "N/A"))),
+        ],
+        "bench_columns": [
+            ("EF Search", lambda b: str(b.get("efSearch", "N/A"))),
+        ],
+    },
+    "ivfflat": {
+        "config_columns": [
+            ("Lists", lambda c, r: str(c.get("lists", r.get("lists", "N/A")))),
+        ],
+        "bench_columns": [
+            ("Probes", lambda b: str(b.get("probes", "N/A"))),
+        ],
+    },
+    "ivfflat_bq_rerank": {
+        "config_columns": [
+            ("Lists", lambda c, r: str(c.get("lists", r.get("lists", "N/A")))),
+        ],
+        "bench_columns": [
+            ("Probes",     lambda b: str(b.get("probes", "N/A"))),
+            ("Rerank Amp", lambda b: str(b.get("rerank_limit_amplify_factor", "N/A"))),
+        ],
+    },
+    "vectorchord": {
+        "config_columns": [
+            ("Lists",                 lambda c, r: str(c.get("lists", r.get("lists", "N/A")))),
+            ("Sampling Factor",       lambda c, r: str(c.get("samplingFactor", "N/A"))),
+            ("Residual Quantization", lambda c, r: str(c.get("residual_quantization", "N/A"))),
+            ("Build Threads",         lambda c, r: str(r.get("build_threads", "N/A"))),
+            ("K-means Hierarchical",  lambda c, r: str(c.get("kmeans_hierarchical", "N/A"))),
+        ],
+        "bench_columns": [
+            ("nprob",   lambda b: str(b.get("nprob", "N/A"))),
+            ("epsilon", lambda b: str(b.get("epsilon", "N/A"))),
+        ],
+    },
+    "pgpu": {
+        "config_columns": [
+            ("Lists",                 lambda c, r: str(c.get("lists", r.get("lists", "N/A")))),
+            ("Sampling Factor",       lambda c, r: str(c.get("samplingFactor", "N/A"))),
+            ("Residual Quantization", lambda c, r: str(c.get("residual_quantization", "N/A"))),
+        ],
+        "bench_columns": [
+            ("nprob",   lambda b: str(b.get("nprob", "N/A"))),
+            ("epsilon", lambda b: str(b.get("epsilon", "N/A"))),
+        ],
+    },
+}
+
+
 def format_markdown_table(headers: list[str], rows: list[list[str]]) -> list[str]:
     """Format a markdown table with proper column alignment."""
     num_cols = len(headers)
@@ -396,27 +456,9 @@ class ResultsManager:
             ["Query Clients", str(query_clients)],
             ["Top-K", str(config.get("top", "N/A"))],
         ]
-
-        if suite_type == "pgvector":
-            config_rows.extend([
-                ["M", str(config.get("m", "N/A"))],
-                ["EF Construction", str(config.get("efConstruction", "N/A"))],
-            ])
-        elif suite_type in ("ivfflat", "ivfflat_bq_rerank"):
-            config_rows.extend([
-                ["Lists", str(config.get("lists", results.get("lists", "N/A")))],
-            ])
-        elif suite_type in ("vectorchord", "pgpu"):
-            config_rows.extend([
-                ["Lists", str(config.get("lists", results.get("lists", "N/A")))],
-                ["Sampling Factor", str(config.get("samplingFactor", "N/A"))],
-                ["Residual Quantization", str(config.get("residual_quantization", "N/A"))],
-            ])
-            if suite_type == "vectorchord":
-                config_rows.extend([
-                    ["Build Threads", str(results.get("build_threads", "N/A"))],
-                    ["K-means Hierarchical", str(config.get("kmeans_hierarchical", "N/A"))],
-                ])
+        spec = SUITE_RENDER_SPECS.get(suite_type, {})
+        for label, extractor in spec.get("config_columns", []):
+            config_rows.append([label, extractor(config, results)])
 
         lines.extend(format_markdown_table(["Parameter", "Value"], config_rows))
 
@@ -437,59 +479,28 @@ class ResultsManager:
 
         # --- Benchmark Results ---
         benchmarks = config.get("benchmarks", {})
+        bench_cols = spec.get("bench_columns", [
+            ("nprob",   lambda b: str(b.get("nprob", "N/A"))),
+            ("epsilon", lambda b: str(b.get("epsilon", "N/A"))),
+        ])
+        bench_headers = [h for h, _ in bench_cols] + ["Recall", "QPS", "P50 (ms)", "P99 (ms)"]
         bench_rows = []
         for bench_name, bench_config in benchmarks.items():
             if bench_name in results and isinstance(results[bench_name], dict) and "recall" in results[bench_name]:
                 br = results[bench_name]
-                if suite_type == "pgvector":
-                    bench_rows.append([
-                        str(bench_config.get("efSearch", "N/A")),
+                bench_rows.append(
+                    [extractor(bench_config) for _, extractor in bench_cols]
+                    + [
                         f"{br['recall']:.4f}",
                         f"{br['qps']:.2f}",
                         f"{br['p50_latency']:.2f}",
                         f"{br['p99_latency']:.2f}",
-                    ])
-                elif suite_type == "ivfflat_bq_rerank":
-                    bench_rows.append([
-                        str(bench_config.get("probes", "N/A")),
-                        str(bench_config.get("rerank_limit_amplify_factor", "N/A")),
-                        f"{br['recall']:.4f}",
-                        f"{br['qps']:.2f}",
-                        f"{br['p50_latency']:.2f}",
-                        f"{br['p99_latency']:.2f}",
-                    ])
-                elif suite_type == "ivfflat":
-                    bench_rows.append([
-                        str(bench_config.get("probes", "N/A")),
-                        f"{br['recall']:.4f}",
-                        f"{br['qps']:.2f}",
-                        f"{br['p50_latency']:.2f}",
-                        f"{br['p99_latency']:.2f}",
-                    ])
-                else:
-                    bench_rows.append([
-                        str(bench_config.get("nprob", "N/A")),
-                        str(bench_config.get("epsilon", "N/A")),
-                        f"{br['recall']:.4f}",
-                        f"{br['qps']:.2f}",
-                        f"{br['p50_latency']:.2f}",
-                        f"{br['p99_latency']:.2f}",
-                    ])
+                    ]
+                )
 
         if bench_rows:
             lines.extend(["", "---", "", "## Benchmark Results", ""])
-            if suite_type == "pgvector":
-                lines.extend(format_markdown_table(
-                    ["EF Search", "Recall", "QPS", "P50 (ms)", "P99 (ms)"], bench_rows))
-            elif suite_type == "ivfflat_bq_rerank":
-                lines.extend(format_markdown_table(
-                    ["Probes", "Rerank Amp", "Recall", "QPS", "P50 (ms)", "P99 (ms)"], bench_rows))
-            elif suite_type == "ivfflat":
-                lines.extend(format_markdown_table(
-                    ["Probes", "Recall", "QPS", "P50 (ms)", "P99 (ms)"], bench_rows))
-            else:
-                lines.extend(format_markdown_table(
-                    ["nprob", "epsilon", "Recall", "QPS", "P50 (ms)", "P99 (ms)"], bench_rows))
+            lines.extend(format_markdown_table(bench_headers, bench_rows))
         elif not benchmarks:
             lines.extend(["", "", "*No benchmark results (build-only mode)*", ""])
 
@@ -590,6 +601,18 @@ class ResultsManager:
         # --- Benchmark Results (unified table across all runs, ordered by timestamp) ---
         lines.extend(["", "---", "", "## Benchmark Results", ""])
 
+        spec = SUITE_RENDER_SPECS.get(suite_type, {})
+        bench_cols = spec.get("bench_columns", [
+            ("nprob",   lambda b: str(b.get("nprob", "N/A"))),
+            ("epsilon", lambda b: str(b.get("epsilon", "N/A"))),
+        ])
+        param_headers = [h for h, _ in bench_cols]
+        bench_headers = (
+            ["Date", "shared_buffers", "Clients"]
+            + param_headers
+            + ["Recall", "QPS", "P50 (ms)", "P99 (ms)"]
+        )
+
         bench_rows = []
         for run_data in all_runs:
             r = run_data.get("results", {})
@@ -599,81 +622,25 @@ class ResultsManager:
             run_date = self._run_date_str(run_id)
 
             sb = r.get("shared_buffers", "N/A")
-            mwm = r.get("maintenance_work_mem", "N/A")
             qc = r.get("query_clients", 1)
 
             benchmarks = c.get("benchmarks", {})
             for bench_name, bench_config in benchmarks.items():
                 if bench_name in r and isinstance(r[bench_name], dict) and "recall" in r[bench_name]:
                     br = r[bench_name]
-                    if suite_type == "pgvector":
-                        bench_rows.append([
-                            run_date,
-                            sb,
-                            str(qc),
-                            str(bench_config.get("efSearch", "N/A")),
+                    bench_rows.append(
+                        [run_date, sb, str(qc)]
+                        + [extractor(bench_config) for _, extractor in bench_cols]
+                        + [
                             f"{br['recall']:.4f}",
                             f"{br['qps']:.2f}",
                             f"{br['p50_latency']:.2f}",
                             f"{br['p99_latency']:.2f}",
-                        ])
-                    elif suite_type == "ivfflat_bq_rerank":
-                        bench_rows.append([
-                            run_date,
-                            sb,
-                            str(qc),
-                            str(bench_config.get("probes", "N/A")),
-                            str(bench_config.get("rerank_limit_amplify_factor", "N/A")),
-                            f"{br['recall']:.4f}",
-                            f"{br['qps']:.2f}",
-                            f"{br['p50_latency']:.2f}",
-                            f"{br['p99_latency']:.2f}",
-                        ])
-                    elif suite_type == "ivfflat":
-                        bench_rows.append([
-                            run_date,
-                            sb,
-                            str(qc),
-                            str(bench_config.get("probes", "N/A")),
-                            f"{br['recall']:.4f}",
-                            f"{br['qps']:.2f}",
-                            f"{br['p50_latency']:.2f}",
-                            f"{br['p99_latency']:.2f}",
-                        ])
-                    else:
-                        bench_rows.append([
-                            run_date,
-                            sb,
-                            str(qc),
-                            str(bench_config.get("nprob", "N/A")),
-                            str(bench_config.get("epsilon", "N/A")),
-                            f"{br['recall']:.4f}",
-                            f"{br['qps']:.2f}",
-                            f"{br['p50_latency']:.2f}",
-                            f"{br['p99_latency']:.2f}",
-                        ])
+                        ]
+                    )
 
         if bench_rows:
-            if suite_type == "pgvector":
-                lines.extend(format_markdown_table(
-                    ["Date", "shared_buffers", "Clients",
-                     "EF Search", "Recall", "QPS", "P50 (ms)", "P99 (ms)"],
-                    bench_rows))
-            elif suite_type == "ivfflat_bq_rerank":
-                lines.extend(format_markdown_table(
-                    ["Date", "shared_buffers", "Clients",
-                     "Probes", "Rerank Amp", "Recall", "QPS", "P50 (ms)", "P99 (ms)"],
-                    bench_rows))
-            elif suite_type == "ivfflat":
-                lines.extend(format_markdown_table(
-                    ["Date", "shared_buffers", "Clients",
-                     "Probes", "Recall", "QPS", "P50 (ms)", "P99 (ms)"],
-                    bench_rows))
-            else:
-                lines.extend(format_markdown_table(
-                    ["Date", "shared_buffers", "Clients",
-                     "nprob", "epsilon", "Recall", "QPS", "P50 (ms)", "P99 (ms)"],
-                    bench_rows))
+            lines.extend(format_markdown_table(bench_headers, bench_rows))
         else:
             lines.append("*No benchmark results recorded.*")
 

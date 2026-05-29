@@ -776,8 +776,13 @@ class TestSuite:
         if hasattr(answers_list, "tolist"):
             answers_list = [a[:top].tolist() if hasattr(a, "tolist") else a[:top] for a in answers_list]
 
-        # Build query template (psycopg3 handles prepared statement caching)
-        query_sql = f"SELECT id FROM {table_name} ORDER BY embedding {metric_ops} %s LIMIT {top}"
+        # warmup_query is the single source of truth for the per-benchmark
+        # query template + bind shape. Suites with multi-stage queries (e.g.
+        # IVFFlat-BQ + rerank) plug them in by overriding warmup_query;
+        # measurement here uses the same SQL the warmup loop uses.
+        query_sql, bind_fn = self.warmup_query(
+            table_name, dataset, metric_ops, top, benchmark
+        )
 
         results = []
         latencies = []
@@ -794,7 +799,7 @@ class TestSuite:
             query = single_query if self.debug_single_query else dataset["test"][i]
 
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,))
+            cursor.execute(query_sql, bind_fn(query))
             result = cursor.fetchall()
             end = time.perf_counter()
 
@@ -923,6 +928,18 @@ class TestSuite:
             "p99_latency": p99,
         }
 
+    # (benchmark-dict key, column header). The summary table emits a column
+    # for every entry whose key appears in any benchmark of the suite, in
+    # this order. Suites add per-index keys here rather than carrying their
+    # own renderer.
+    BENCH_PARAM_COLUMNS = [
+        ("efSearch",                    "EF Search"),
+        ("probes",                      "Probes"),
+        ("nprob",                       "Probes"),
+        ("epsilon",                     "Epsilon"),
+        ("rerank_limit_amplify_factor", "Rerank Amp"),
+    ]
+
     def print_summary_table(self, suite_name: str):
         """Print a summary table of all benchmark results for a suite."""
         benchmarks = self.config[suite_name].get("benchmarks", {})
@@ -931,31 +948,44 @@ class TestSuite:
         if not benchmarks:
             return
 
-        # Determine columns based on benchmark parameters
-        first_bench = next(iter(benchmarks.values()))
-        has_ef_search = "efSearch" in first_bench
-        has_nprob = "nprob" in first_bench
-        has_probes = "probes" in first_bench
-        has_rerank_amp = has_probes and any(
-            "rerank_limit_amplify_factor" in b for b in benchmarks.values()
-        )
-
-        # Build header and rows
-        if has_ef_search:
-            header = "| EF Search | Recall | QPS    | P50 (ms) | P99 (ms) |"
-            sep =    "|-----------|--------|--------|----------|----------|"
-        elif has_nprob:
-            header = "| Probes    | Epsilon | Recall | QPS    | P50 (ms) | P99 (ms) |"
-            sep =    "|-----------|---------|--------|--------|----------|----------|"
-        elif has_rerank_amp:
-            header = "| Probes | Rerank Amp | Recall | QPS    | P50 (ms) | P99 (ms) |"
-            sep =    "|--------|------------|--------|--------|----------|----------|"
-        elif has_probes:
-            header = "| Probes | Recall | QPS    | P50 (ms) | P99 (ms) |"
-            sep =    "|--------|--------|--------|----------|----------|"
-        else:
+        present_keys = [
+            (key, header)
+            for key, header in self.BENCH_PARAM_COLUMNS
+            if any(key in b for b in benchmarks.values())
+        ]
+        if not present_keys:
             return
 
+        param_headers = [h for _, h in present_keys]
+        result_headers = ["Recall", "QPS", "P50 (ms)", "P99 (ms)"]
+        all_headers = param_headers + result_headers
+
+        rows = []
+        for name, benchmark in benchmarks.items():
+            r = results.get(name, {})
+            if "recall" not in r:
+                continue
+            row = [str(benchmark.get(key, "N/A")) for key, _ in present_keys]
+            row += [
+                f"{r['recall']:.4f}",
+                f"{r['qps']:.2f}",
+                f"{r['p50_latency']:.2f}",
+                f"{r['p99_latency']:.2f}",
+            ]
+            rows.append(row)
+
+        if not rows:
+            return
+
+        widths = [len(h) for h in all_headers]
+        for row in rows:
+            for i, cell in enumerate(row):
+                widths[i] = max(widths[i], len(cell))
+
+        def fmt_row(cells):
+            return "| " + " | ".join(c.ljust(widths[i]) for i, c in enumerate(cells)) + " |"
+
+        sep = "|-" + "-|-".join("-" * w for w in widths) + "-|"
         sb = results.get("shared_buffers", "N/A")
         idx_size = results.get("index_size", "N/A")
         qc = results.get("query_clients", 1)
@@ -964,41 +994,10 @@ class TestSuite:
         print(f"  Results Summary: {suite_name}")
         print(f"  shared_buffers: {sb} | clients: {qc} | index_size: {idx_size}")
         print(f"{'=' * len(sep)}")
-        print(header)
+        print(fmt_row(all_headers))
         print(sep)
-
-        for name, benchmark in benchmarks.items():
-            r = results.get(name, {})
-            if "recall" not in r:
-                continue
-
-            if has_ef_search:
-                print(f"| {benchmark['efSearch']:<9} "
-                      f"| {r['recall']:.4f} "
-                      f"| {r['qps']:>6.2f} "
-                      f"| {r['p50_latency']:>8.2f} "
-                      f"| {r['p99_latency']:>8.2f} |")
-            elif has_nprob:
-                print(f"| {benchmark['nprob']:<9} "
-                      f"| {benchmark['epsilon']:<7} "
-                      f"| {r['recall']:.4f} "
-                      f"| {r['qps']:>6.2f} "
-                      f"| {r['p50_latency']:>8.2f} "
-                      f"| {r['p99_latency']:>8.2f} |")
-            elif has_rerank_amp:
-                print(f"| {benchmark['probes']:<6} "
-                      f"| {benchmark.get('rerank_limit_amplify_factor', 'N/A'):<10} "
-                      f"| {r['recall']:.4f} "
-                      f"| {r['qps']:>6.2f} "
-                      f"| {r['p50_latency']:>8.2f} "
-                      f"| {r['p99_latency']:>8.2f} |")
-            elif has_probes:
-                print(f"| {benchmark['probes']:<6} "
-                      f"| {r['recall']:.4f} "
-                      f"| {r['qps']:>6.2f} "
-                      f"| {r['p50_latency']:>8.2f} "
-                      f"| {r['p99_latency']:>8.2f} |")
-
+        for row in rows:
+            print(fmt_row(row))
         print()
 
     def run_benchmarks(self, suite_name: str, table_name: str, dataset: dict, query_clients):
