@@ -1,10 +1,10 @@
-ivfflat-cohere-3m-2k:
-  indexType: ivfflat
-  dataset: cohere-3m-cos
+pgvector-ivfflat-bq-rerank-openai-5m-2k:
+  indexType: ivfflat_bq_rerank
+  dataset: openai-5m-cos
   datasetType: parquet
   metric: cos
-  lists: 2000  # ~sqrt(3M), rounded
-  maintenance_work_mem: 12GB
+  lists: 2236  # ~sqrt(5M)
+  maintenance_work_mem: 17GB
   pg_parallel_workers: 32
   top: 10
   benchmarks:

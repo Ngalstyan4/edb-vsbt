@@ -1,4 +1,4 @@
-ivfflat-cohere-10m-3k:
+pgvector-ivfflat-cohere-10m-3k:
   indexType: ivfflat
   dataset: cohere-10m-cos
   datasetType: parquet

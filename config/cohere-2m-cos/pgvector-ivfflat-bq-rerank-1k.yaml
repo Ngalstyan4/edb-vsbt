@@ -1,5 +1,5 @@
-ivfflat-cohere-2m-1k:
-  indexType: ivfflat
+pgvector-ivfflat-bq-rerank-cohere-2m-1k:
+  indexType: ivfflat_bq_rerank
   dataset: cohere-2m-cos
   datasetType: parquet
   metric: cos

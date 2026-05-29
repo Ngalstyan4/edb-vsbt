@@ -1,8 +1,8 @@
-ivfflat-deep1b-5m-2k:
+pgvector-ivfflat-openai-5m-2k:
   indexType: ivfflat
-  dataset: deep1b-test-l2
-  datasetType: npy
-  metric: l2
+  dataset: openai-5m-cos
+  datasetType: parquet
+  metric: cos
   lists: 2236  # ~sqrt(5M)
   maintenance_work_mem: 17GB
   pg_parallel_workers: 32

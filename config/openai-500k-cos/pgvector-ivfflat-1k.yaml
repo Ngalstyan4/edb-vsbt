@@ -1,9 +1,9 @@
-ivfflat-openai-1m-1k:
+pgvector-ivfflat-openai-500k-1k:
   indexType: ivfflat
-  dataset: openai-1m-cos
+  dataset: openai-500k-cos
   datasetType: parquet
   metric: cos
-  lists: 1000  # ~sqrt(1M)
+  lists: 1000  # ~sqrt(500k), rounded
   maintenance_work_mem: 4GB
   pg_parallel_workers: 32
   top: 10

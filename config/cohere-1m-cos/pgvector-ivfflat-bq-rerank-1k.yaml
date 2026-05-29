@@ -1,8 +1,8 @@
-ivfflat-sift-1m-1k:
-  indexType: ivfflat
-  dataset: sift-128-euclidean
-  datasetType: hdf5
-  metric: l2
+pgvector-ivfflat-bq-rerank-cohere-1m-1k:
+  indexType: ivfflat_bq_rerank
+  dataset: cohere-1m-cos
+  datasetType: parquet
+  metric: cos
   lists: 1000  # ~sqrt(1M)
   maintenance_work_mem: 4GB
   pg_parallel_workers: 32

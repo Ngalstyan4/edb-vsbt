@@ -1,10 +1,10 @@
-ivfflat-bq-rerank-openai-2m-1k:
-  indexType: ivfflat_bq_rerank
-  dataset: openai-2m-cos
-  datasetType: parquet
-  metric: cos
-  lists: 1414  # ~sqrt(2M)
-  maintenance_work_mem: 8GB
+pgvector-ivfflat-deep1b-5m-2k:
+  indexType: ivfflat
+  dataset: deep1b-test-l2
+  datasetType: npy
+  metric: l2
+  lists: 2236  # ~sqrt(5M)
+  maintenance_work_mem: 17GB
   pg_parallel_workers: 32
   top: 10
   benchmarks:

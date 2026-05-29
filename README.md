@@ -124,10 +124,10 @@ Configs are grouped by dataset (one directory per dataset, e.g. `config/sift-128
 python pgvector_suite.py -s config/laion-5m-test-ip/pgvector-m16-128.yaml
 
 # Vanilla IVFFlat: indexType: ivfflat
-python pgvector_suite.py -s config/laion-5m-test-ip/ivfflat.yaml
+python pgvector_suite.py -s config/laion-5m-test-ip/pgvector-ivfflat-4k.yaml
 
 # IVFFlat with binary quantization + exact rerank: indexType: ivfflat_bq_rerank
-python pgvector_suite.py -s config/laion-5m-test-ip/ivfflat-bq-rerank.yaml
+python pgvector_suite.py -s config/openai-5m-cos/pgvector-ivfflat-bq-rerank-2k.yaml
 
 # Skip loading if data already exists
 python pgvector_suite.py -s config/laion-5m-test-ip/pgvector-m16-128.yaml --skip-add-embeddings
@@ -290,7 +290,7 @@ pgvector-laion-5m-m16-128:
 Vanilla IVFFlat (`indexType: ivfflat`):
 
 ```yaml
-ivfflat-laion-5m:
+pgvector-ivfflat-laion-5m-4k:
   indexType: ivfflat
   dataset: laion-5m-test-ip
   datasetType: hdf5
@@ -308,12 +308,12 @@ ivfflat-laion-5m:
 IVFFlat with binary quantization + exact rerank (`indexType: ivfflat_bq_rerank`). The index is built on `binary_quantize(embedding)::bit(dim)` with Hamming distance; queries fetch `top * rerank_limit_amplify_factor` candidates from the BQ index and re-sort them by full-precision distance. `rerank_limit_amplify_factor` defaults to 20 and can be omitted.
 
 ```yaml
-ivfflat-bq-rerank-laion-5m:
+pgvector-ivfflat-bq-rerank-openai-5m-2k:
   indexType: ivfflat_bq_rerank
-  dataset: laion-5m-test-ip
-  datasetType: hdf5
-  metric: dot
-  lists: 4472
+  dataset: openai-5m-cos
+  datasetType: parquet
+  metric: cos
+  lists: 2236
   maintenance_work_mem: 17GB
   pg_parallel_workers: 32
   top: 10

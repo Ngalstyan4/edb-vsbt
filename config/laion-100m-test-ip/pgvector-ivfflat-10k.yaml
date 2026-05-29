@@ -1,4 +1,4 @@
-ivfflat-laion-100m-10k:
+pgvector-ivfflat-laion-100m-10k:
   indexType: ivfflat
   dataset: laion-100m-test-ip
   datasetType: hdf5

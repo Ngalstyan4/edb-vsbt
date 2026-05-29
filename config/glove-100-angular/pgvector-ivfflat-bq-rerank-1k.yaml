@@ -1,9 +1,9 @@
-ivfflat-bq-rerank-openai-500k-1k:
+pgvector-ivfflat-bq-rerank-glove-1m-1k:
   indexType: ivfflat_bq_rerank
-  dataset: openai-500k-cos
-  datasetType: parquet
+  dataset: glove-100-angular
+  datasetType: hdf5
   metric: cos
-  lists: 1000  # ~sqrt(500k), rounded
+  lists: 1088  # ~sqrt(1.18M)
   maintenance_work_mem: 4GB
   pg_parallel_workers: 32
   top: 10

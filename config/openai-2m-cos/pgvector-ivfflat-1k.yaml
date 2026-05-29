@@ -1,6 +1,6 @@
-ivfflat-bq-rerank-cohere-2m-1k:
-  indexType: ivfflat_bq_rerank
-  dataset: cohere-2m-cos
+pgvector-ivfflat-openai-2m-1k:
+  indexType: ivfflat
+  dataset: openai-2m-cos
   datasetType: parquet
   metric: cos
   lists: 1414  # ~sqrt(2M)
