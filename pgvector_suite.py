@@ -17,6 +17,11 @@ from tqdm import tqdm
 import common
 from results import ResultsManager
 
+# Default candidate-set amplification for IVFFlat-BQ + rerank: a query
+# pulls top * DEFAULT_RERANK_AMP rows from the binary-quantized index
+# before re-sorting by exact distance.
+DEFAULT_RERANK_AMP = 20
+
 
 def build_arg_parse():
     """Build argument parser for pgvector benchmark suite."""
@@ -499,8 +504,6 @@ class IVFFlatBQRerankTestSuite(PgvectorBaseTestSuite):
     rerank using the configured metric on the original `vector` column.
     """
 
-    DEFAULT_RERANK_AMP = 20
-
     @staticmethod
     def _two_stage_query_sql(table_name: str, dim: int, rerank_op: str, top: int) -> str:
         return (
@@ -568,7 +571,7 @@ class IVFFlatBQRerankTestSuite(PgvectorBaseTestSuite):
             table_name,
             benchmark["probes"],
             dim,
-            benchmark.get("rerank_limit_amplify_factor", self.DEFAULT_RERANK_AMP),
+            benchmark.get("rerank_limit_amplify_factor", DEFAULT_RERANK_AMP),
             warmup_n,
         )
 
@@ -578,7 +581,7 @@ class IVFFlatBQRerankTestSuite(PgvectorBaseTestSuite):
     def warmup_query(self, table_name, dataset, metric_ops, top, benchmark):
         dim = dataset["dim"]
         rerank_amp = (benchmark or {}).get(
-            "rerank_limit_amplify_factor", self.DEFAULT_RERANK_AMP
+            "rerank_limit_amplify_factor", DEFAULT_RERANK_AMP
         )
         rerank_limit = top * rerank_amp
         sql = self._two_stage_query_sql(table_name, dim, metric_ops, top)
@@ -648,7 +651,7 @@ class IVFFlatBQRerankTestSuite(PgvectorBaseTestSuite):
         rerank_op = self._get_metric_operator(metric)
         dim = dataset["dim"]
         rerank_amp = benchmark.get(
-            "rerank_limit_amplify_factor", self.DEFAULT_RERANK_AMP
+            "rerank_limit_amplify_factor", DEFAULT_RERANK_AMP
         )
         rerank_limit = top * rerank_amp
 

@@ -987,7 +987,7 @@ class TestSuite:
                       f"| {r['p99_latency']:>8.2f} |")
             elif has_rerank_amp:
                 print(f"| {benchmark['probes']:<6} "
-                      f"| {benchmark.get('rerank_limit_amplify_factor', 20):<10} "
+                      f"| {benchmark.get('rerank_limit_amplify_factor', 'N/A'):<10} "
                       f"| {r['recall']:.4f} "
                       f"| {r['qps']:>6.2f} "
                       f"| {r['p50_latency']:>8.2f} "

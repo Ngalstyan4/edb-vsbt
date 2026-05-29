@@ -452,7 +452,7 @@ class ResultsManager:
                 elif suite_type == "ivfflat_bq_rerank":
                     bench_rows.append([
                         str(bench_config.get("probes", "N/A")),
-                        str(bench_config.get("rerank_limit_amplify_factor", 20)),
+                        str(bench_config.get("rerank_limit_amplify_factor", "N/A")),
                         f"{br['recall']:.4f}",
                         f"{br['qps']:.2f}",
                         f"{br['p50_latency']:.2f}",
@@ -623,7 +623,7 @@ class ResultsManager:
                             sb,
                             str(qc),
                             str(bench_config.get("probes", "N/A")),
-                            str(bench_config.get("rerank_limit_amplify_factor", 20)),
+                            str(bench_config.get("rerank_limit_amplify_factor", "N/A")),
                             f"{br['recall']:.4f}",
                             f"{br['qps']:.2f}",
                             f"{br['p50_latency']:.2f}",
