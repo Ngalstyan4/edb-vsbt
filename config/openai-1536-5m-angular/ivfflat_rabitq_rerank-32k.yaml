@@ -1,0 +1,91 @@
+ivfflat-rabitq-rerank-openai-1536-5m-32k:
+  indexType: ivfflat_rabitq_rerank
+  dataset: openai-5m-cos
+  datasetType: hdf5
+  metric: cos
+  lists: 32768
+  maintenance_work_mem: 24GB
+  pg_parallel_workers: 10
+  scan_limit: 100
+  top: 10
+  benchmarks:
+    # probes500-rerank20:
+    #   probes: 500
+    #   rerank_limit_amplify_factor: 20
+    # probes500-rerank25:
+    #   probes: 500
+    #   rerank_limit_amplify_factor: 25
+    # probes500-rerank30:
+    #   probes: 500
+    #   rerank_limit_amplify_factor: 30
+    #   scan_limit: 300
+    # probes400-rerank30:
+    #   probes: 400
+    #   rerank_limit_amplify_factor: 30
+    #   scan_limit: 300
+    # probes600-rerank20:
+    #   probes: 600
+    #   rerank_limit_amplify_factor: 20
+    # probes400-rerank25:
+    #   probes: 400
+    #   rerank_limit_amplify_factor: 25
+    # probes250-rerank25:
+    #   probes: 250
+    #   rerank_limit_amplify_factor: 25
+    # 30-60-1.9:
+    #   probes: 30
+    #   rerank_limit_amplify_factor: 25
+    # 40-80-1.9:
+    #   probes: 40
+    #   rerank_limit_amplify_factor: 25
+    # 76-150-1.9:
+    #   probes: 76
+    #   rerank_limit_amplify_factor: 25
+    # 100-200-1.9:
+    #   probes: 100
+    #   rerank_limit_amplify_factor: 25
+    # 130-260-1.9:
+    #   probes: 130
+    #   rerank_limit_amplify_factor: 100
+    #   scan_limit: 1000
+    # 160-320-1.9:
+    #   probes: 160
+    #   rerank_limit_amplify_factor: 25
+
+    # Low rerank-amp sweeps: RaBitQ's estimator is more accurate than
+    # plain BQ, so it should reach the same recall with far fewer
+    # reranked candidates. Sweep amp={5,10,15} at probes that were
+    # previously bottlenecked on rerank cost.
+    probes100-rerank5:
+      probes: 100
+      rerank_limit_amplify_factor: 5
+    probes100-rerank10:
+      probes: 100
+      rerank_limit_amplify_factor: 10
+    probes100-rerank15:
+      probes: 100
+      rerank_limit_amplify_factor: 15
+    probes160-rerank5:
+      probes: 160
+      rerank_limit_amplify_factor: 5
+    probes160-rerank10:
+      probes: 160
+      rerank_limit_amplify_factor: 10
+    probes160-rerank15:
+      probes: 160
+      rerank_limit_amplify_factor: 15
+    probes250-rerank5:
+      probes: 250
+      rerank_limit_amplify_factor: 5
+    probes250-rerank10:
+      probes: 250
+      rerank_limit_amplify_factor: 10
+    probes250-rerank15:
+      probes: 250
+      rerank_limit_amplify_factor: 15
+    probes400-rerank10:
+      probes: 400
+      rerank_limit_amplify_factor: 10
+    probes500-rerank10:
+      probes: 500
+      rerank_limit_amplify_factor: 10

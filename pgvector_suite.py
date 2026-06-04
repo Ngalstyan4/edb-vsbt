@@ -203,7 +203,11 @@ def _bq_rerank_query_template(table_name, dataset, metric_ops, top, benchmark):
 
 
 def _bq_rerank_session_gucs(benchmark):
-    return _ivfflat_session_gucs(benchmark)
+    gucs = _ivfflat_session_gucs(benchmark)
+    scan_limit = benchmark.get("scan_limit")
+    if scan_limit is not None:
+        gucs.append(f"SET ivfflat.scan_limit TO {scan_limit}")
+    return gucs
 
 
 def _bq_rerank_create_index_sql(table_name, config, dataset):
@@ -227,6 +231,63 @@ def _bq_rerank_debug_print(config, dataset):
     lists = _ivfflat_resolve_lists(config, dataset)
     print(f"\n🔧 Index Configuration (IVFFlat BQ Rerank):")
     print(f"    • Lists:           {lists}")
+    print(f"    • Dimensions:      {dataset['dim']}")
+    print()
+
+
+_RABITQ_OPCLASS = {
+    "l2": "vector_rabitq_l2_ops", "euclidean": "vector_rabitq_l2_ops",
+    "cos": "vector_rabitq_cosine_ops", "angular": "vector_rabitq_cosine_ops",
+    "dot": "vector_rabitq_ip_ops", "ip": "vector_rabitq_ip_ops",
+}
+
+
+def _rabitq_rerank_query_template(table_name, dataset, metric_ops, top, benchmark):
+    dim = dataset["dim"]
+    rerank_limit = top * _resolve_rerank_amp(benchmark)
+    sql_text = (
+        f"SELECT id FROM ("
+        f"SELECT id, embedding FROM {table_name} "
+        f"ORDER BY embedding {metric_ops} %s::vector({dim}) "
+        f"LIMIT %s::int"
+        f") sub "
+        f"ORDER BY embedding {metric_ops} %s::vector({dim}) "
+        f"LIMIT {top}"
+    )
+    return sql_text, (lambda q: (q, rerank_limit, q))
+
+
+def _rabitq_rerank_session_gucs(benchmark):
+    gucs = [
+        f"SET ivfflat.probes TO {benchmark['probes']}",
+        "SET enable_seqscan = off",
+    ]
+    scan_limit = benchmark.get("scan_limit")
+    if scan_limit is not None:
+        gucs.append(f"SET ivfflat.scan_limit TO {scan_limit}")
+    return gucs
+
+
+def _rabitq_rerank_create_index_sql(table_name, config, dataset):
+    metric = dataset["metric"]
+    if metric not in _RABITQ_OPCLASS:
+        raise ValueError(
+            f"Unsupported metric type for rabitq: {metric!r}"
+        )
+    lists = _ivfflat_resolve_lists(config, dataset)
+    opclass = _RABITQ_OPCLASS[metric]
+    return (
+        f"CREATE INDEX {table_name}_embedding_idx ON {table_name} "
+        f"USING ivfflat (embedding {opclass}) WITH (lists = {lists})"
+    )
+
+
+def _rabitq_rerank_debug_print(config, dataset):
+    lists = _ivfflat_resolve_lists(config, dataset)
+    opclass = _RABITQ_OPCLASS[dataset["metric"]]
+    print(f"\n🔧 Index Configuration (IVFFlat RaBitQ Rerank):")
+    print(f"    • Lists:           {lists}")
+    print(f"    • Opclass:         {opclass}")
     print(f"    • Dimensions:      {dataset['dim']}")
     print()
 
@@ -269,6 +330,20 @@ INDEX_SPECS = {
         session_gucs=_bq_rerank_session_gucs,
         create_index_sql=_bq_rerank_create_index_sql,
         debug_print=_bq_rerank_debug_print,
+        bench_param_columns=(
+            ("probes", "Probes"),
+            ("rerank_limit_amplify_factor", "Rerank Amp"),
+        ),
+        config_columns=_IVFFLAT_CONFIG_COLUMNS,
+    ),
+    "ivfflat_rabitq_rerank": IndexSpec(
+        index_type="ivfflat_rabitq_rerank",
+        suite_type="pgvector-ivfflat-rabitq-rerank",
+        query_template=_rabitq_rerank_query_template,
+        bind_kind="two_stage",
+        session_gucs=_rabitq_rerank_session_gucs,
+        create_index_sql=_rabitq_rerank_create_index_sql,
+        debug_print=_rabitq_rerank_debug_print,
         bench_param_columns=(
             ("probes", "Probes"),
             ("rerank_limit_amplify_factor", "Rerank Amp"),
@@ -538,13 +613,20 @@ class TestSuite(common.TestSuite):
             query_sql,
             self.spec.bind_kind,
             rerank_limit,
-            self.spec.session_gucs(benchmark),
+            self.spec.session_gucs(self._effective_benchmark(benchmark)),
             self.url,
             warmup_n,
         )
 
+    def _effective_benchmark(self, benchmark):
+        """Merge suite-level scan_limit into benchmark if not overridden."""
+        suite_scan_limit = next(iter(self.config.values())).get("scan_limit")
+        if suite_scan_limit is not None and "scan_limit" not in benchmark:
+            return {**benchmark, "scan_limit": suite_scan_limit}
+        return benchmark
+
     def apply_session_guc(self, conn, benchmark):
-        for stmt in self.spec.session_gucs(benchmark):
+        for stmt in self.spec.session_gucs(self._effective_benchmark(benchmark)):
             conn.execute(stmt)
 
     def warmup_query(self, table_name, dataset, metric_ops, top, benchmark):
