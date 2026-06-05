@@ -1093,6 +1093,13 @@ class TestSuite:
                 self.system_monitor.mark_phase("load_end")
             self.pg_stats_collector.capture_snapshot("after_load", table_name)
 
+        if not self.skip_add_embeddings:
+            conn = self.create_connection()
+            print(f"Running ANALYZE {table_name}...", end="", flush=True)
+            conn.execute(f"ANALYZE {table_name}")
+            conn.close()
+            print(" done.")
+
         if self.centroids is not None and not self.skip_index_creation:
             self.add_centroids_to_table(self.centroids)
 
