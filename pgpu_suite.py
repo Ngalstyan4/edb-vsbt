@@ -54,13 +54,13 @@ class TestSuite(common.TestSuite):
         if warmup_n:
             n_test = len(test)
             for j in range(warmup_n):
-                cursor.execute(query_sql, (test[j % n_test],))
+                cursor.execute(query_sql, (test[j % n_test],), prepare=True, binary=True)
                 cursor.fetchall()
 
         results = []
         for query, ground_truth in zip(test, answer):
             start = time.perf_counter()
-            cursor.execute(query_sql, (query,))
+            cursor.execute(query_sql, (query,), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 

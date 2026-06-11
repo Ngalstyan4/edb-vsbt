@@ -404,7 +404,7 @@ class TestSuite:
             while i < max_n:
                 q = test[i % n_test]
                 t0 = time.perf_counter()
-                cursor.execute(query_sql, bind_fn(q))
+                cursor.execute(query_sql, bind_fn(q), prepare=True, binary=True)
                 cursor.fetchall()
                 latencies.append(time.perf_counter() - t0)
                 i += 1
@@ -802,7 +802,7 @@ class TestSuite:
             query = single_query if self.debug_single_query else dataset["test"][i]
 
             start = time.perf_counter()
-            cursor.execute(query_sql, bind_fn(query))
+            cursor.execute(query_sql, bind_fn(query), prepare=True, binary=True)
             result = cursor.fetchall()
             end = time.perf_counter()
 
